@@ -97,6 +97,23 @@ export class Orchestrator {
 
   async start(): Promise<void> {
     await this.d.state.load();
+    const leftovers = this.d.state.allRunning();
+    for (const { threadTs, state } of leftovers) {
+      try {
+        await this.d.slack.postReply(
+          state.channelId,
+          threadTs,
+          "Daemon restarted; that run was interrupted. Re-mention to resume."
+        );
+      } catch (err) {
+        this.d.log.error({ err }, "failed to post interrupt notice");
+      }
+      await this.d.state.upsertThread(threadTs, {
+        ...state,
+        status: "interrupted",
+        updatedAt: new Date(this.d.nowMs()).toISOString(),
+      });
+    }
     this.watchdogTimer = setInterval(() => this.tickWatchdog(), 30_000);
   }
 

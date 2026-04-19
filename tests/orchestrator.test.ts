@@ -330,3 +330,39 @@ describe("Orchestrator commands", () => {
     expect(stdins[1]).toMatch(/Reassess what's blocking/);
   });
 });
+
+describe("Orchestrator startup recovery", () => {
+  it("marks leftover running jobs as interrupted and posts in their threads", async () => {
+    const leftover = {
+      sessionId: "old",
+      channelId: "C1",
+      triggerMsgTs: "1.001",
+      statusMsgTs: "1.002",
+      status: "running" as const,
+      startedAt: "2026-04-18T00:00:00Z",
+      updatedAt: "2026-04-18T00:00:00Z",
+      lastEventAt: "2026-04-18T00:00:00Z",
+    };
+    const d = deps({
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => undefined),
+        allRunning: vi.fn(() => [{ threadTs: "T1", state: leftover }]),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      },
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    o.stop();
+    expect(d.slack.postReply).toHaveBeenCalledWith(
+      "C1",
+      "T1",
+      expect.stringMatching(/Daemon restarted/)
+    );
+    expect(d.state.upsertThread).toHaveBeenCalledWith(
+      "T1",
+      expect.objectContaining({ status: "interrupted" })
+    );
+  });
+});
