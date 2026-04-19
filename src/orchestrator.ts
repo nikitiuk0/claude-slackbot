@@ -129,6 +129,11 @@ export class Orchestrator {
   }
 
   async enqueue(mention: IncomingMention): Promise<void> {
+    const cmd = mention.cleanText.trim().toLowerCase();
+    if (cmd === "stop" || cmd === "nudge" || cmd === "reset" || cmd === "status") {
+      return this.handleCommand(cmd, mention);
+    }
+
     const slot = this.threads.get(mention.threadTs) ?? {
       running: null,
       queued: null,
@@ -179,6 +184,76 @@ export class Orchestrator {
     while (this.inFlightPromises.size > 0) {
       await Promise.race([...this.inFlightPromises]);
     }
+  }
+
+  private async handleCommand(
+    cmd: "stop" | "nudge" | "reset" | "status",
+    mention: IncomingMention
+  ): Promise<void> {
+    const slot = this.threads.get(mention.threadTs);
+
+    if (cmd === "status") {
+      const s = this.d.state.getThread(mention.threadTs);
+      if (!s) {
+        await this.d.slack.postReply(mention.channelId, mention.threadTs, "No state for this thread yet.");
+        return;
+      }
+      await this.d.slack.postReply(
+        mention.channelId,
+        mention.threadTs,
+        [
+          `status: ${s.status}`,
+          `started_at: ${s.startedAt}`,
+          `last_event_at: ${s.lastEventAt}`,
+          `session_id: ${s.sessionId.slice(0, 8)}…`,
+        ].join("\n")
+      );
+      return;
+    }
+
+    if (cmd === "stop") {
+      if (slot?.running && slot.stopController) slot.stopController.stop();
+      await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "stop_button");
+      const s = this.d.state.getThread(mention.threadTs);
+      if (s) {
+        await this.d.state.upsertThread(mention.threadTs, {
+          ...s,
+          status: "stopped",
+          updatedAt: new Date(this.d.nowMs()).toISOString(),
+        });
+      }
+      await this.d.slack.postReply(mention.channelId, mention.threadTs, "Stopped. Re-mention to resume.");
+      return;
+    }
+
+    if (cmd === "reset") {
+      if (slot?.running && slot.stopController) slot.stopController.stop();
+      await this.d.state.deleteThread(mention.threadTs);
+      await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "broom");
+      await this.d.slack.postReply(mention.channelId, mention.threadTs, "Session reset. Next mention will start fresh.");
+      return;
+    }
+
+    if (cmd === "nudge") {
+      if (slot?.running && slot.stopController) slot.stopController.stop();
+      // Wait briefly for the stop to take effect, then enqueue a synthetic mention.
+      await new Promise((r) => setTimeout(r, 10));
+      await this.runJob({
+        mention: {
+          ...mention,
+          cleanText:
+            "You haven't made progress recently. Reassess what's blocking you and either ask a clarifying question or pick a different approach.",
+        },
+      });
+    }
+  }
+
+  private async runJob(job: Job): Promise<void> {
+    const { threadTs } = job.mention;
+    if (!this.threads.has(threadTs)) {
+      this.threads.set(threadTs, { running: null, queued: null, stopController: null });
+    }
+    this.startJob(job);
   }
 
   private startJob(job: Job): void {

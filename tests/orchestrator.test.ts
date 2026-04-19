@@ -216,3 +216,117 @@ describe("Orchestrator watchdog", () => {
     vi.useRealTimers();
   });
 });
+
+describe("Orchestrator commands", () => {
+  it("stop kills running subprocess and sets status to stopped", async () => {
+    let resolve: () => void = () => {};
+    const stops: number[] = [];
+    const d = deps({
+      runClaude: vi.fn(async (input, onLine, control) => {
+        control.onStop(() => stops.push(1));
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        await new Promise<void>((r) => (resolve = r));
+        return { exitCode: 130, signal: "SIGTERM", stderr: "" };
+      }),
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => ({
+          sessionId: "S", channelId: "C1", triggerMsgTs: "T1", statusMsgTs: "100.001",
+          status: "running", startedAt: "x", updatedAt: "x", lastEventAt: "x",
+        } as any)),
+        allRunning: vi.fn(() => []),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      },
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    void o.enqueue(m({ cleanText: "fix it" }));
+    await new Promise((r) => setTimeout(r, 10));
+    await o.enqueue(m({ eventId: "E2", cleanText: "stop" }));
+    expect(stops.length).toBe(1);
+    resolve();
+    await o.idle();
+    o.stop();
+    const upserts = (d.state.upsertThread as any).mock.calls;
+    const stoppedCall = upserts.find((c: any) => c[1].status === "stopped");
+    expect(stoppedCall).toBeDefined();
+  });
+
+  it("reset wipes the thread state", async () => {
+    const d = deps({
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => ({ sessionId: "old" } as any)),
+        allRunning: vi.fn(() => []),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      },
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m({ cleanText: "reset" }));
+    o.stop();
+    expect(d.state.deleteThread).toHaveBeenCalledWith("T1");
+    expect(d.slack.addReaction).toHaveBeenCalledWith("C1", "T1", "broom");
+  });
+
+  it("status replies with the current thread state", async () => {
+    const d = deps({
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => ({
+          sessionId: "abc12345xxxxx",
+          status: "done",
+          startedAt: "2026-04-19T00:00:00Z",
+          lastEventAt: "2026-04-19T00:01:00Z",
+        } as any)),
+        allRunning: vi.fn(() => []),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      },
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m({ cleanText: "status" }));
+    o.stop();
+    expect(d.slack.postReply).toHaveBeenCalledWith(
+      "C1",
+      "T1",
+      expect.stringMatching(/status: done/i)
+    );
+  });
+
+  it("nudge stops the run, then resumes the session with a wake-up turn", async () => {
+    const stdins: string[] = [];
+    let release: () => void = () => {};
+    const releases: Array<() => void> = [];
+    const d = deps({
+      runClaude: vi.fn(async (input, onLine, control) => {
+        stdins.push(input.stdin);
+        if (stdins.length === 1) {
+          control.onStop(() => release());
+          await new Promise<void>((r) => (release = r));
+          return { exitCode: 130, signal: "SIGTERM", stderr: "" };
+        }
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        onLine(
+          JSON.stringify({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "<slack-summary>\nSummary: ok\n</slack-summary>" }] },
+          })
+        );
+        return { exitCode: 0, signal: null, stderr: "" };
+      }),
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    void o.enqueue(m({ cleanText: "fix it" }));
+    await new Promise((r) => setTimeout(r, 10));
+    await o.enqueue(m({ eventId: "E2", cleanText: "nudge" }));
+    await o.idle();
+    o.stop();
+    expect(stdins.length).toBe(2);
+    expect(stdins[1]).toMatch(/Reassess what's blocking/);
+  });
+});
