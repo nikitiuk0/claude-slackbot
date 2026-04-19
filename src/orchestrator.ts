@@ -57,6 +57,8 @@ export type StateApi = {
 export type OrchestratorDeps = {
   maxParallelJobs: number;
   coalesceMs: number;
+  stallSoftNoticeMs: number;
+  stallHardStopMs: number;
   nowMs: () => number;
   fetchThread: FetchThreadFn;
   buildInitial: (input: { systemPrompt: string; thread: RenderedMessage[]; instruction: string }) => string;
@@ -70,7 +72,13 @@ export type OrchestratorDeps = {
   ownerDisplayName: string;
 };
 
-type Job = { mention: IncomingMention; statusMsgTs?: string };
+type Job = {
+  mention: IncomingMention;
+  statusMsgTs?: string;
+  lastEventAt?: number;       // ms epoch
+  lastMilestone?: string;
+  softNoticed?: boolean;
+};
 
 type ThreadSlot = {
   running: Job | null;
@@ -83,11 +91,41 @@ export class Orchestrator {
   private globalQueue: Job[] = [];
   private inFlight = 0;
   private inFlightPromises = new Set<Promise<void>>();
+  private watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly d: OrchestratorDeps) {}
 
   async start(): Promise<void> {
     await this.d.state.load();
+    this.watchdogTimer = setInterval(() => this.tickWatchdog(), 30_000);
+  }
+
+  stop(): void {
+    if (this.watchdogTimer !== null) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+  }
+
+  private tickWatchdog(): void {
+    const now = this.d.nowMs();
+    for (const slot of this.threads.values()) {
+      const j = slot.running;
+      if (!j || !j.statusMsgTs || j.lastEventAt === undefined) continue;
+      const idle = now - j.lastEventAt;
+      if (!j.softNoticed && idle >= this.d.stallSoftNoticeMs) {
+        j.softNoticed = true;
+        void this.d.slack.editMessage(
+          j.mention.channelId,
+          j.statusMsgTs,
+          (j.lastMilestone ?? "Working\u2026") +
+            "\n\n\u26a0\ufe0f No progress in 5m. Reply 'stop' to abort or 'nudge' to wake it. Auto-stop after 24h."
+        );
+      }
+      if (idle >= this.d.stallHardStopMs && slot.stopController) {
+        slot.stopController.stop();
+      }
+    }
   }
 
   async enqueue(mention: IncomingMention): Promise<void> {
@@ -111,11 +149,25 @@ export class Orchestrator {
     }
 
     if (this.inFlight >= this.d.maxParallelJobs) {
-      await this.d.slack.addReaction(
-        mention.channelId,
-        mention.triggerMsgTs,
-        "hourglass_flowing_sand"
-      );
+      await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "hourglass_flowing_sand");
+      const stale: string[] = [];
+      for (const slot of this.threads.values()) {
+        const j = slot.running;
+        if (j && j.statusMsgTs && j.lastEventAt !== undefined) {
+          const idle = this.d.nowMs() - j.lastEventAt;
+          if (idle > this.d.stallSoftNoticeMs) {
+            const link = await this.d.slack.permalink(j.mention.channelId, j.statusMsgTs);
+            const mins = Math.round(idle / 60_000);
+            stale.push(`\u2022 ${link} (no progress for ${mins}m)`);
+          }
+        }
+      }
+      const lines = [`Queued \u2014 ${this.globalQueue.length + 1} jobs ahead.`];
+      if (stale.length > 0) {
+        lines.push("The following running jobs haven't made progress recently and may be candidates to stop:");
+        lines.push(...stale);
+      }
+      await this.d.slack.postReply(mention.channelId, mention.threadTs, lines.join("\n"));
       this.globalQueue.push({ mention });
       return;
     }
@@ -205,6 +257,8 @@ export class Orchestrator {
       lastEventAt: startedAt,
     });
 
+    job.lastEventAt = this.d.nowMs();
+
     const lineStream = new LineStream();
     const milestones: string[] = [];
     let summary: string | null = null;
@@ -215,6 +269,8 @@ export class Orchestrator {
         if (ev.kind === "session-init") observedSessionId = ev.sessionId;
         else if (ev.kind === "milestone") {
           milestones.push(ev.text);
+          job.lastEventAt = this.d.nowMs();
+          job.lastMilestone = ev.text;
           coalescer.update(ev.text);
         } else if (ev.kind === "summary") {
           summary = ev.text;
@@ -222,10 +278,14 @@ export class Orchestrator {
       }
     })();
 
+    let stopCb: (() => void) | null = null;
+    const slot = this.threads.get(mention.threadTs)!;
+    slot.stopController = { stop: () => { if (stopCb) stopCb(); } };
+
     const result = await this.d.runClaude(
       { stdin, sessionMode },
       (line) => lineStream.push(line),
-      { onStop: () => {} }
+      { onStop: (cb) => { stopCb = cb; } }
     );
     lineStream.end();
     await parserDone;

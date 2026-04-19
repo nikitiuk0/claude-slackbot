@@ -9,6 +9,8 @@ function deps(over: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
   return {
     maxParallelJobs: 2,
     coalesceMs: 3000,
+    stallSoftNoticeMs: 5 * 60_000,
+    stallHardStopMs: 24 * 60 * 60_000,
     nowMs: () => Date.now(),
     fetchThread: vi.fn(async () => ({ raw: [], rendered: [] })),
     buildInitial: vi.fn((s) => `INITIAL:${s.instruction}`),
@@ -137,5 +139,80 @@ describe("Orchestrator", () => {
     releases.forEach((r) => r());
     await o.idle();
     expect((d.runClaude as any).mock.calls.length).toBe(3);
+    o.stop();
+  });
+});
+
+describe("Orchestrator watchdog", () => {
+  it("posts a soft notice after stallSoftNoticeMs of silence", async () => {
+    vi.useFakeTimers();
+    const d = deps({
+      coalesceMs: 0,
+      stallSoftNoticeMs: 5 * 60_000,
+      stallHardStopMs: 24 * 60 * 60_000,
+      runClaude: vi.fn(async (input, onLine) => {
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        await new Promise((r) => setTimeout(r, 10 * 60_000));
+        onLine(
+          JSON.stringify({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "<slack-summary>\nSummary: ok\n</slack-summary>" }] },
+          })
+        );
+        return { exitCode: 0, signal: null, stderr: "" };
+      }),
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    const p = o.enqueue(m());
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    expect(d.slack.editMessage).toHaveBeenCalledWith(
+      "C1",
+      "100.001",
+      expect.stringContaining("No progress in 5m")
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    await p;
+    o.stop();
+    vi.useRealTimers();
+  });
+
+  it("queue-pressure message lists stale running jobs with permalinks", async () => {
+    vi.useFakeTimers();
+    const releases: Array<() => void> = [];
+    const d = deps({
+      maxParallelJobs: 1,
+      stallSoftNoticeMs: 5 * 60_000,
+      stallHardStopMs: 24 * 60 * 60_000,
+      runClaude: vi.fn(async (input, onLine) => {
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        await new Promise<void>((r) => releases.push(r));
+        return { exitCode: 0, signal: null, stderr: "" };
+      }),
+      slack: {
+        postReply: vi.fn(async () => ({ ts: "100.001" })),
+        editMessage: vi.fn(async () => {}),
+        addReaction: vi.fn(async () => {}),
+        permalink: vi.fn(async () => "https://slack/perm/x"),
+      },
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m({ threadTs: "T1" }));
+    await vi.advanceTimersByTimeAsync(6 * 60_000); // T1 becomes stale
+    await o.enqueue(m({ threadTs: "T2", eventId: "E2" }));
+    expect(d.slack.postReply).toHaveBeenCalledWith(
+      "C1",
+      "T2",
+      expect.stringContaining("Queued")
+    );
+    expect(d.slack.postReply).toHaveBeenCalledWith(
+      "C1",
+      "T2",
+      expect.stringContaining("https://slack/perm/x")
+    );
+    releases.forEach((r) => r());
+    o.stop();
+    vi.useRealTimers();
   });
 });
