@@ -1,0 +1,12 @@
+node_modules/
+data/
+.env
+.env.*
+!.env.example
+config.json
+!config.example.json
+dist/
+*.log
+.DS_Store
+.vitest-cache/
+coverage/
