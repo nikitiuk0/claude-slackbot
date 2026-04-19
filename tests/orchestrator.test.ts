@@ -226,7 +226,7 @@ describe("Orchestrator commands", () => {
         control.onStop(() => stops.push(1));
         onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
         await new Promise<void>((r) => (resolve = r));
-        return { exitCode: 130, signal: "SIGTERM", stderr: "" };
+        return { exitCode: 130, signal: "SIGTERM" as NodeJS.Signals, stderr: "" };
       }),
       state: {
         load: vi.fn(async () => {}),
@@ -307,7 +307,7 @@ describe("Orchestrator commands", () => {
         if (stdins.length === 1) {
           control.onStop(() => release());
           await new Promise<void>((r) => (release = r));
-          return { exitCode: 130, signal: "SIGTERM", stderr: "" };
+          return { exitCode: 130, signal: "SIGTERM" as NodeJS.Signals, stderr: "" };
         }
         onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
         onLine(
