@@ -1,0 +1,28 @@
+display_information:
+  name: claude-bot
+  description: Spawns a local Claude session for the operator who installed the daemon.
+  background_color: "#1f1f1f"
+features:
+  bot_user:
+    display_name: claude-bot
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+      - chat:write
+      - reactions:write
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
