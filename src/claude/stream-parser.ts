@@ -95,7 +95,7 @@ export async function* parseStream(
         const t = TextItem.safeParse(item);
         if (t.success) {
           const match = SUMMARY_RE.exec(t.data.text);
-          if (match) {
+          if (match?.[1] !== undefined) {
             yield { kind: "summary", text: match[1].trim() };
           }
         }
