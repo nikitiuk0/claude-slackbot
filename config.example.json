@@ -1,0 +1,9 @@
+{
+  "workdir": "/absolute/path/to/your/working/folder",
+  "claudeBinary": "claude",
+  "maxParallelJobs": 3,
+  "stallSoftNoticeMinutes": 5,
+  "stallHardStopHours": 24,
+  "slackEditCoalesceMs": 3000,
+  "ownerDisplayName": "your-name"
+}
