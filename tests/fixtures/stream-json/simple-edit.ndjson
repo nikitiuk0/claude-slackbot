@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","session_id":"sess-abc"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Looking at the file..."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"src/foo.ts"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"src/foo.ts"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"npm test"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Done.\n\n<slack-summary>\nSummary: fixed the typo.\n\nDecisions and assumptions:\n- minor change, no tests added\n\nPRs:\n- foo: https://example.com/pr/1\n</slack-summary>"}]}}
+{"type":"result","subtype":"success"}
