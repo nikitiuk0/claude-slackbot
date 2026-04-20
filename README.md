@@ -1,8 +1,18 @@
-# Claude Slackbot
+# extra-hand
+
+An *extra hand* for your Slack threads — a local Claude Code daemon you can `@mention` to do actual software engineering work.
 
 ## Overview
 
-Claude Slackbot is a Node.js + TypeScript daemon that runs on your laptop, connects to Slack via Socket Mode, and puts Claude to work whenever you `@mention` it in a thread. Mention the bot in any channel it belongs to, and it spawns a local `claude` CLI session pointed at a configured working folder on your machine — Claude reads the codebase, edits files, runs tests, pushes branches, and opens draft PRs. When the work is done, the bot posts a structured summary back in the thread with a one-sentence recap, key decisions, and PR links. Follow-up mentions in the same thread resume the same Claude session, so you can iterate in place. For full design rationale, architecture decisions, and failure-handling details, see [`docs/superpowers/specs/2026-04-19-claude-slackbot-design.md`](docs/superpowers/specs/2026-04-19-claude-slackbot-design.md).
+`extra-hand` is a Node.js + TypeScript daemon that runs on your laptop, connects to Slack via Socket Mode, and puts Claude to work whenever you `@mention` it in a thread. Mention the bot in any channel it belongs to, and it spawns a local `claude` CLI session pointed at a configured working folder on your machine — Claude reads the codebase, edits files, runs tests, pushes branches, and opens draft PRs. When the work is done, the bot posts a structured summary back in the thread with a one-sentence recap, key decisions, and PR links. Follow-up mentions in the same thread resume the same Claude session, so you can iterate in place.
+
+Key properties:
+- **Runs locally.** No third-party hosting. The daemon on your laptop is the only thing Slack talks to (Socket Mode, no inbound webhooks).
+- **Uses your Claude Code setup.** The bot shells out to the `claude` CLI, so it inherits your MCP servers, custom skills, settings, and auth.
+- **Single-user by design (for now).** Only Slack user IDs you allowlist can trigger your laptop. Multi-user routing is on the roadmap.
+- **Bounded blast radius.** Claude runs with `--dangerously-skip-permissions` but only inside one configured folder, and opens draft PRs by default.
+
+For full design rationale, architecture decisions, and failure-handling details, see [`docs/superpowers/specs/2026-04-19-claude-slackbot-design.md`](docs/superpowers/specs/2026-04-19-claude-slackbot-design.md).
 
 ---
 
@@ -31,8 +41,8 @@ Claude Slackbot is a Node.js + TypeScript daemon that runs on your laptop, conne
 ## 3. Local setup
 
 ```bash
-git clone <repo-url> slackbot
-cd slackbot
+git clone https://github.com/nikitiuk0/extra-hand.git
+cd extra-hand
 npm install
 cp .env.example .env
 # Edit .env: paste your xoxb- and xapp- tokens, set ALLOWED_USER_IDS to your Slack user ID(s)
