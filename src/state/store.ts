@@ -58,6 +58,10 @@ export class StateStore {
       .map(([threadTs, state]) => ({ threadTs, state }));
   }
 
+  allThreads(): Array<{ threadTs: string; state: ThreadState }> {
+    return Object.entries(this.data.threads).map(([threadTs, state]) => ({ threadTs, state }));
+  }
+
   async upsertThread(threadTs: string, state: ThreadState): Promise<void> {
     this.data.threads[threadTs] = state;
     await this.flush();

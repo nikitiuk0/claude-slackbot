@@ -6,6 +6,7 @@ import { loadConfig } from "./config.js";
 import { createLogger } from "./log.js";
 import { StateStore } from "./state/store.js";
 import { MilestonesStore } from "./state/milestones.js";
+import { AttachmentsStore } from "./slack/attachments.js";
 import { IdentityGate } from "./identity-gate.js";
 import { ClaudeRunner } from "./claude/runner.js";
 import { SlackAdapter } from "./slack/adapter.js";
@@ -29,6 +30,7 @@ async function main() {
 
   const state = new StateStore("./data/state.json");
   const milestones = new MilestonesStore("./data/milestones");
+  const attachments = new AttachmentsStore("./data/attachments", cfg.slackBotToken);
   const gate = new IdentityGate({
     allowed: cfg.allowedUserIds,
     rejectCooldownMs: 60 * 60 * 1000,
@@ -90,7 +92,7 @@ async function main() {
     coalesceMs: cfg.slackEditCoalesceMs,
     nowMs: () => Date.now(),
     fetchThread: (channelId, threadTs) =>
-      fetchThread(slackAdapter.client(), channelId, threadTs, "UTC"),
+      fetchThread(slackAdapter.client(), channelId, threadTs, "UTC", attachments),
     buildInitial: buildInitialInput,
     buildFollowUp: buildFollowUpInput,
     runClaude: async (input, onLine, control) => {
@@ -104,6 +106,8 @@ async function main() {
     slack: slackFacade,
     state,
     milestones,
+    attachments,
+    archiveIdleMs: cfg.archiveIdleDays * 24 * 60 * 60 * 1000,
     log,
     timeZone: "UTC",
     systemPrompt,

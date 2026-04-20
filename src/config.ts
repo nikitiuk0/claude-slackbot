@@ -24,6 +24,9 @@ const JsonSchema = z.object({
   stallHardStopHours: z.number().positive().default(24),
   slackEditCoalesceMs: z.number().positive().default(3000),
   ownerDisplayName: z.string().min(1),
+  /** Days of inactivity after which a thread's state/milestones/attachments
+   *  are purged by the janitor. 0 disables the janitor. */
+  archiveIdleDays: z.number().nonnegative().default(7),
 });
 
 export type Config = {
@@ -39,6 +42,7 @@ export type Config = {
   stallHardStopHours: number;
   slackEditCoalesceMs: number;
   ownerDisplayName: string;
+  archiveIdleDays: number;
 };
 
 export function loadConfig(input: {

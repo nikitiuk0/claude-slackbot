@@ -119,6 +119,10 @@ Commands always work even if no run is in progress — they respond with a frien
 
 **Global parallel cap.** By default, at most 3 Claude subprocesses run at once across all threads (configurable via `maxParallelJobs` in `config.json`). When the cap is full, a new mention gets a ⏳ reaction and a queued notice that lists any currently stale running jobs (no progress in >5 min) with Slack permalinks so you can decide whether to `stop` them.
 
+**Image attachments.** When a message in the thread has an image attached, the bot downloads it (using the bot's OAuth token) to `./data/attachments/<thread_ts>/` and renders the absolute local path into the thread context handed to Claude, so Claude can read the image with its `Read` tool (vision). Non-image attachments are mentioned in the context with a Slack permalink but not downloaded. Requires the `files:read` scope (included in the manifest).
+
+**Archive janitor.** Threads whose last event is older than `archiveIdleDays` (default 7) get their state, milestone history, and downloaded attachments purged. Runs once at daemon startup and every hour thereafter. Set `archiveIdleDays: 0` in `config.json` to disable.
+
 **Watchdog.** If a running job produces no stream output for 5 minutes, the status message gets a one-shot warning: "No progress in 5m — reply `stop` to abort or `nudge` to wake it." After 24 hours with no progress, the job is auto-stopped as a sanity net (session preserved for resume).
 
 ---

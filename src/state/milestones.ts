@@ -88,4 +88,15 @@ export class MilestonesStore {
     }
     return lastStart >= 0 ? all.slice(lastStart) : all;
   }
+
+  /** Remove the ndjson file for a thread. Best-effort. */
+  async purgeThread(threadTs: string): Promise<void> {
+    const path = this.fileFor(threadTs);
+    try {
+      await fs.unlink(path);
+    } catch (err: unknown) {
+      const e = err as NodeJS.ErrnoException;
+      if (e?.code !== "ENOENT") throw err;
+    }
+  }
 }

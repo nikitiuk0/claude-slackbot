@@ -44,7 +44,9 @@ function deps(over: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
       append: vi.fn(async () => {}),
       readAll: vi.fn(async () => []),
       readLastRun: vi.fn(async () => []),
+      purgeThread: vi.fn(async () => {}),
     } as any,
+    archiveIdleMs: 0,
     log: (() => {
       const noop = () => {};
       const stub: any = {
@@ -674,5 +676,100 @@ describe("Orchestrator startup recovery", () => {
       "T1",
       expect.objectContaining({ status: "interrupted" })
     );
+  });
+});
+
+describe("Orchestrator janitor", () => {
+  function idleThread(overrides: Partial<any> = {}) {
+    return {
+      sessionId: "S",
+      channelId: "C1",
+      triggerMsgTs: "1.0",
+      statusMsgTs: "2.0",
+      status: "done",
+      startedAt: "2026-04-01T00:00:00Z",
+      updatedAt: "2026-04-01T00:00:00Z",
+      lastEventAt: "2026-04-01T00:00:00Z", // old
+      ...overrides,
+    };
+  }
+
+  it("archives threads idle longer than archiveIdleMs on startup", async () => {
+    const now = Date.parse("2026-04-19T00:00:00Z"); // 18 days later
+    const purge = vi.fn(async () => {});
+    const d = deps({
+      archiveIdleMs: 7 * 24 * 60 * 60 * 1000,
+      nowMs: () => now,
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => undefined),
+        allRunning: vi.fn(() => []),
+        allThreads: vi.fn(() => [
+          { threadTs: "T_old", state: idleThread() },
+          { threadTs: "T_recent", state: idleThread({ lastEventAt: "2026-04-18T12:00:00Z" }) },
+        ]),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      } as any,
+      milestones: {
+        append: vi.fn(async () => {}),
+        readAll: vi.fn(async () => []),
+        readLastRun: vi.fn(async () => []),
+        purgeThread: purge,
+      } as any,
+      attachments: { purgeThread: vi.fn(async () => {}) },
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await new Promise((r) => setImmediate(r));
+    o.stop();
+    expect(d.state.deleteThread).toHaveBeenCalledWith("T_old");
+    expect(d.state.deleteThread).not.toHaveBeenCalledWith("T_recent");
+    expect(purge).toHaveBeenCalledWith("T_old");
+    expect((d.attachments as any).purgeThread).toHaveBeenCalledWith("T_old");
+  });
+
+  it("never archives running threads even if lastEventAt is old", async () => {
+    const now = Date.parse("2026-04-19T00:00:00Z");
+    const d = deps({
+      archiveIdleMs: 7 * 24 * 60 * 60 * 1000,
+      nowMs: () => now,
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => undefined),
+        allRunning: vi.fn(() => []),
+        allThreads: vi.fn(() => [
+          { threadTs: "T_running", state: idleThread({ status: "running" }) },
+        ]),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      } as any,
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await new Promise((r) => setImmediate(r));
+    o.stop();
+    expect(d.state.deleteThread).not.toHaveBeenCalled();
+  });
+
+  it("archiveIdleMs = 0 disables the janitor", async () => {
+    const d = deps({
+      archiveIdleMs: 0,
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => undefined),
+        allRunning: vi.fn(() => []),
+        allThreads: vi.fn(() => [
+          { threadTs: "T_old", state: idleThread() },
+        ]),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      } as any,
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await new Promise((r) => setImmediate(r));
+    o.stop();
+    expect(d.state.deleteThread).not.toHaveBeenCalled();
   });
 });

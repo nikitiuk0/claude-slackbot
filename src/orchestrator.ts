@@ -68,6 +68,10 @@ export type OrchestratorDeps = {
   slack: SlackClientFacade;
   state: StateApi;
   milestones: MilestonesStore;
+  /** Optional — if provided, janitor also purges a thread's attachments. */
+  attachments?: { purgeThread(threadTs: string): Promise<void> };
+  /** ms; threads idle longer than this are archived. 0 disables the janitor. */
+  archiveIdleMs: number;
   log: Logger;
   timeZone: string;
   systemPrompt: string;
@@ -102,6 +106,7 @@ export class Orchestrator {
   private inFlight = 0;
   private inFlightPromises = new Set<Promise<void>>();
   private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+  private janitorTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly d: OrchestratorDeps) {}
 
@@ -170,6 +175,20 @@ export class Orchestrator {
       });
     }
     this.watchdogTimer = setInterval(() => this.tickWatchdog(), 30_000);
+
+    if (this.d.archiveIdleMs > 0) {
+      // Kick once on startup, then every hour.
+      void this.runJanitor().catch((err) =>
+        this.d.log.error({ err }, "janitor startup tick failed")
+      );
+      this.janitorTimer = setInterval(
+        () => void this.runJanitor().catch((err) =>
+          this.d.log.error({ err }, "janitor tick failed")
+        ),
+        60 * 60 * 1000
+      );
+    }
+
     this.d.log.info({ maxParallelJobs: this.d.maxParallelJobs }, "orchestrator ready");
   }
 
@@ -178,7 +197,49 @@ export class Orchestrator {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = null;
     }
+    if (this.janitorTimer !== null) {
+      clearInterval(this.janitorTimer);
+      this.janitorTimer = null;
+    }
     this.d.log.info("orchestrator stopped");
+  }
+
+  /**
+   * Drop thread state + milestones + attachments for any thread whose
+   * `lastEventAt` is older than `archiveIdleMs`. Skips threads that have
+   * an in-flight job (we never archive something currently running).
+   */
+  private async runJanitor(): Promise<void> {
+    const cutoffMs = this.d.nowMs() - this.d.archiveIdleMs;
+    const purged: string[] = [];
+    // The StateApi currently only exposes getThread / allRunning / upsert / delete.
+    // We need a full listing — use allRunning plus a new enumeration helper.
+    // For simplicity, we enumerate via the "load once, look through the map"
+    // approach: StateStore internally has all entries; we iterate via a new
+    // method `allThreads()`. But to avoid widening the StateApi surface area
+    // just for this, we rely on the janitor being best-effort + the state
+    // store exposing allThreads() (added below).
+    const all = (this.d.state as StateApi & {
+      allThreads?: () => Array<{ threadTs: string; state: ThreadState }>;
+    }).allThreads?.() ?? [];
+    for (const { threadTs, state } of all) {
+      if (state.status === "running") continue; // never archive live threads
+      const lastEvent = Date.parse(state.lastEventAt);
+      if (!Number.isFinite(lastEvent) || lastEvent > cutoffMs) continue;
+      try {
+        await this.d.state.deleteThread(threadTs);
+        await this.d.milestones.purgeThread(threadTs).catch(() => {});
+        if (this.d.attachments) {
+          await this.d.attachments.purgeThread(threadTs).catch(() => {});
+        }
+        purged.push(threadTs);
+      } catch (err) {
+        this.d.log.warn({ err, threadTs }, "janitor failed to purge thread");
+      }
+    }
+    if (purged.length > 0) {
+      this.d.log.info({ count: purged.length }, "janitor archived idle threads");
+    }
   }
 
   private tickWatchdog(): void {
