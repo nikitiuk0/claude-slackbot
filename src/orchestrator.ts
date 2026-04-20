@@ -769,26 +769,26 @@ export class Orchestrator {
         lastEventAt: ts,
       });
     } else {
-      const hasStderr = result.stderr.trim().length > 0;
-      const diagnosticSource = hasStderr ? result.stderr : (result.stdoutTail ?? "");
       jlog.error(
         {
           exitCode: result.exitCode,
           signal: result.signal,
           parserError,
           stderrTail: result.stderr.split("\n").slice(-5).join("\n"),
-          stdoutTailBytes: (result.stdoutTail ?? "").length,
+          stdoutTail: (result.stdoutTail ?? "").split("\n").slice(-20).join("\n"),
         },
         "job errored"
       );
-      const tail = diagnosticSource.split("\n").slice(-20).join("\n");
-      const label = hasStderr ? "stderr" : "stdout (last 20 lines)";
-      const errorLine = parserError ? `Claude reported: ${parserError}\n\n` : "";
+      // Keep the Slack message short — full stdout/stderr live in the log file.
+      const stderrSnippet = result.stderr.trim().split("\n").slice(-3).join("\n");
+      const body = parserError
+        ? parserError
+        : stderrSnippet || "(no error output — see daemon log for details)";
       await this.replaceStatusWithFinalReply(
         channelId,
         threadTs,
         status.ts,
-        `Errored (exit ${result.exitCode}).\n\n${errorLine}${label}:\n\`\`\`\n${tail || "(empty)"}\n\`\`\``,
+        `❌ Errored (exit ${result.exitCode}).\n\`\`\`\n${body}\n\`\`\``,
         jlog
       );
       await this.d.slack.addReaction(channelId, triggerMsgTs, "x");

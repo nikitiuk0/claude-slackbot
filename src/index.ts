@@ -30,7 +30,11 @@ async function main() {
 
   const state = new StateStore("./data/state.json");
   const milestones = new MilestonesStore("./data/milestones");
-  const attachments = new AttachmentsStore("./data/attachments", cfg.slackBotToken);
+  const attachments = new AttachmentsStore(
+    "./data/attachments",
+    cfg.slackBotToken,
+    log.child({ component: "attachments" })
+  );
   const gate = new IdentityGate({
     allowed: cfg.allowedUserIds,
     rejectCooldownMs: 60 * 60 * 1000,

@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import { dirname, join, resolve as resolvePath } from "node:path";
+import type { Logger } from "../log.js";
 
 export type SlackFile = {
   id: string;
@@ -30,7 +31,8 @@ function safeName(name: string | undefined, fallback: string): string {
 export class AttachmentsStore {
   constructor(
     private readonly baseDir: string,
-    private readonly botToken: string
+    private readonly botToken: string,
+    private readonly log?: Logger
   ) {}
 
   dirFor(threadTs: string): string {
@@ -65,15 +67,51 @@ export class AttachmentsStore {
         await fs.mkdir(dirname(target), { recursive: true });
         const res = await fetch(file.url_private, {
           headers: { Authorization: `Bearer ${this.botToken}` },
+          redirect: "manual",
         });
+        const contentType = res.headers.get("content-type") ?? "";
+        // Slack returns a 302 → login page when the bot token lacks
+        // `files:read`. Following the redirect would give us HTML; without
+        // following it, we see status 302 with a Location pointing to
+        // slack.com. Either way, a non-image content-type or a redirect
+        // means we shouldn't write to disk.
+        if (res.status >= 300 && res.status < 400) {
+          this.log?.warn(
+            {
+              fileId: file.id,
+              status: res.status,
+              location: res.headers.get("location"),
+            },
+            "slack returned redirect for file download — bot token likely lacks files:read scope"
+          );
+          results.push({ file });
+          continue;
+        }
         if (!res.ok) {
+          this.log?.warn(
+            { fileId: file.id, status: res.status },
+            "slack file download returned non-OK status"
+          );
+          results.push({ file });
+          continue;
+        }
+        if (!contentType.startsWith("image/") && !contentType.startsWith("application/octet-stream")) {
+          this.log?.warn(
+            { fileId: file.id, contentType, expected: file.mimetype },
+            "slack file download returned wrong content-type (probably sign-in HTML); missing files:read?"
+          );
           results.push({ file });
           continue;
         }
         const buf = Buffer.from(await res.arrayBuffer());
         await fs.writeFile(target, buf);
+        this.log?.info(
+          { fileId: file.id, bytes: buf.length, target },
+          "downloaded slack attachment"
+        );
         results.push({ file, localPath: target });
-      } catch {
+      } catch (err) {
+        this.log?.warn({ err, fileId: file.id }, "slack file download threw");
         results.push({ file });
       }
     }
