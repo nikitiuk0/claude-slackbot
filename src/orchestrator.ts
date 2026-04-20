@@ -285,7 +285,7 @@ export class Orchestrator {
       const wasRunning = !!slot?.running;
       if (slot?.running) slot.running.terminatedBy = "stop";
       if (slot?.running && slot.stopController) slot.stopController.stop();
-      await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "stop_button");
+      await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "octagonal_sign");
       const s = this.d.state.getThread(mention.threadTs);
       if (s) {
         await this.d.state.upsertThread(mention.threadTs, {

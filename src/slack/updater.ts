@@ -52,7 +52,7 @@ export type Reaction =
   | "hourglass_flowing_sand"
   | "arrows_counterclockwise"
   | "broom"
-  | "stop_button"
+  | "octagonal_sign"
   | "no_entry_sign"
   | "shrug";
 
@@ -80,7 +80,11 @@ export function makeSlackClientFacade(client: any): SlackClientFacade {
       try {
         await client.reactions.add({ channel, timestamp: ts, name });
       } catch (err: any) {
-        if (err?.data?.error !== "already_reacted") throw err;
+        const code = err?.data?.error;
+        // Reactions are decorative — never let a bad emoji name or duplicate
+        // reaction crash the orchestrator pipeline.
+        if (code === "already_reacted" || code === "invalid_name") return;
+        throw err;
       }
     },
     async permalink(channel, ts) {
