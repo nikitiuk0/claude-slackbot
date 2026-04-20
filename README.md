@@ -14,6 +14,9 @@ Key properties:
 
 For full design rationale, architecture decisions, and failure-handling details, see [`docs/superpowers/specs/2026-04-19-claude-slackbot-design.md`](docs/superpowers/specs/2026-04-19-claude-slackbot-design.md).
 
+<img width="410" height="816" alt="Screenshot 2026-04-20 at 2 15 41 AM" src="https://github.com/user-attachments/assets/156cabcb-f568-45bf-8967-64796ad1c4b4" />
+
+
 ---
 
 ## 1. Prerequisites
