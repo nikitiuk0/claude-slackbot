@@ -105,6 +105,7 @@ async function main() {
     timeZone: "UTC",
     systemPrompt,
     ownerDisplayName: cfg.ownerDisplayName,
+    workdir: cfg.workdir,
     stallSoftNoticeMs: cfg.stallSoftNoticeMinutes * 60_000,
     stallHardStopMs: cfg.stallHardStopHours * 60 * 60_000,
   });

@@ -54,6 +54,7 @@ function deps(over: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
     timeZone: "UTC",
     systemPrompt: "SYS",
     ownerDisplayName: "alice",
+    workdir: "/tmp/sandbox",
     ...over,
   } as OrchestratorDeps;
 }
@@ -397,12 +398,13 @@ describe("Orchestrator commands", () => {
     expect(d.slack.addReaction).toHaveBeenCalledWith("C1", "T1", "broom");
   });
 
-  it("status replies with the current thread state", async () => {
+  it("status replies with the current thread state and a manual resume snippet", async () => {
     const d = deps({
+      workdir: "/Users/me/work/sandbox",
       state: {
         load: vi.fn(async () => {}),
         getThread: vi.fn(() => ({
-          sessionId: "abc12345xxxxx",
+          sessionId: "abc12345-aaaa-bbbb-cccc-ddddeeeeffff",
           status: "done",
           startedAt: "2026-04-19T00:00:00Z",
           lastEventAt: "2026-04-19T00:01:00Z",
@@ -416,11 +418,61 @@ describe("Orchestrator commands", () => {
     await o.start();
     await o.enqueue(m({ cleanText: "status" }));
     o.stop();
-    expect(d.slack.postReply).toHaveBeenCalledWith(
-      "C1",
-      "T1",
-      expect.stringMatching(/status: done/i)
-    );
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    const replyText = replyCalls.find((c: any[]) => typeof c[2] === "string" && c[2].includes("status:"))[2];
+    expect(replyText).toMatch(/status: done/);
+    expect(replyText).toMatch(/session_id: abc12345-aaaa-bbbb-cccc-ddddeeeeffff/);
+    expect(replyText).toContain("Resume manually:");
+    expect(replyText).toContain("cd /Users/me/work/sandbox");
+    expect(replyText).toContain("claude --resume abc12345-aaaa-bbbb-cccc-ddddeeeeffff");
+  });
+
+  it("help command lists all commands", async () => {
+    const d = deps();
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m({ cleanText: "help" }));
+    o.stop();
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    const replyText = replyCalls[replyCalls.length - 1][2];
+    expect(replyText).toContain("`stop`");
+    expect(replyText).toContain("`nudge`");
+    expect(replyText).toContain("alias: `ping`");
+    expect(replyText).toContain("`reset`");
+    expect(replyText).toContain("`status`");
+    expect(replyText).toContain("`help`");
+  });
+
+  it("ping is treated as a nudge alias", async () => {
+    const stdins: string[] = [];
+    let release: () => void = () => {};
+    const d = deps({
+      runClaude: vi.fn(async (input, onLine, control) => {
+        stdins.push(input.stdin);
+        if (stdins.length === 1) {
+          control.onStop(() => release());
+          await new Promise<void>((r) => (release = r));
+          return { exitCode: 130, signal: "SIGTERM" as NodeJS.Signals, stderr: "" };
+        }
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        onLine(
+          JSON.stringify({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "<slack-summary>\nSummary: ok\n</slack-summary>" }] },
+          })
+        );
+        return { exitCode: 0, signal: null, stderr: "" };
+      }),
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    void o.enqueue(m({ cleanText: "fix it" }));
+    await new Promise((r) => setTimeout(r, 10));
+    await o.enqueue(m({ eventId: "E2", cleanText: "ping" }));
+    await o.idle();
+    o.stop();
+    expect(stdins.length).toBe(2);
+    expect(stdins[1]).toMatch(/Reassess what's blocking/);
   });
 
   it("nudge stops the run, then resumes the session with a wake-up turn", async () => {

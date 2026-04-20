@@ -70,6 +70,8 @@ export type OrchestratorDeps = {
   timeZone: string;
   systemPrompt: string;
   ownerDisplayName: string;
+  /** Used by the status command to print a manual `claude --resume` snippet. */
+  workdir: string;
 };
 
 type Job = {
@@ -192,9 +194,14 @@ export class Orchestrator {
     });
     mlog.info({ cleanTextLen: mention.cleanText.length }, "mention received");
 
-    const cmd = mention.cleanText.trim().toLowerCase();
-    if (cmd === "stop" || cmd === "nudge" || cmd === "reset" || cmd === "status") {
-      mlog.info({ cmd }, "command dispatch");
+    const rawCmd = mention.cleanText.trim().toLowerCase();
+    const cmd =
+      rawCmd === "ping" ? "nudge" :
+      rawCmd === "stop" || rawCmd === "nudge" || rawCmd === "reset" ||
+      rawCmd === "status" || rawCmd === "help" ? rawCmd :
+      null;
+    if (cmd) {
+      mlog.info({ cmd, alias: rawCmd !== cmd ? rawCmd : undefined }, "command dispatch");
       return this.handleCommand(cmd, mention, mlog);
     }
 
@@ -256,11 +263,29 @@ export class Orchestrator {
   }
 
   private async handleCommand(
-    cmd: "stop" | "nudge" | "reset" | "status",
+    cmd: "stop" | "nudge" | "reset" | "status" | "help",
     mention: IncomingMention,
     mlog: Logger = this.d.log
   ): Promise<void> {
     const slot = this.threads.get(mention.threadTs);
+
+    if (cmd === "help") {
+      await this.d.slack.postReply(
+        mention.channelId,
+        mention.threadTs,
+        [
+          "Available commands (mention me followed by one of these in this thread):",
+          "• `stop` — kill the current run; session preserved (re-mention to resume)",
+          "• `nudge` (alias: `ping`) — wake me up if I'm stuck; resumes the session with a reassess prompt",
+          "• `reset` — wipe my session memory for this thread; next mention starts a brand-new run",
+          "• `status` — show current state for this thread + how to resume the session manually",
+          "• `help` — show this list",
+          "",
+          "To start work: just mention me with what you want me to do.",
+        ].join("\n")
+      );
+      return;
+    }
 
     if (cmd === "status") {
       const s = this.d.state.getThread(mention.threadTs);
@@ -268,6 +293,12 @@ export class Orchestrator {
         await this.d.slack.postReply(mention.channelId, mention.threadTs, "No state for this thread yet.");
         return;
       }
+      const resumeSnippet = [
+        "```",
+        `cd ${this.d.workdir}`,
+        `claude --resume ${s.sessionId}`,
+        "```",
+      ].join("\n");
       await this.d.slack.postReply(
         mention.channelId,
         mention.threadTs,
@@ -275,7 +306,10 @@ export class Orchestrator {
           `status: ${s.status}`,
           `started_at: ${s.startedAt}`,
           `last_event_at: ${s.lastEventAt}`,
-          `session_id: ${s.sessionId.slice(0, 8)}…`,
+          `session_id: ${s.sessionId}`,
+          "",
+          "Resume manually:",
+          resumeSnippet,
         ].join("\n")
       );
       return;
