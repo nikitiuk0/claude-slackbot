@@ -53,4 +53,45 @@ describe("ClaudeRunner", () => {
     const result = await p;
     expect(result.exitCode).not.toBe(0);
   });
+
+  it("stop() kills grandchild processes (process group)", async () => {
+    const wrapper = join(dir, "parent.mjs");
+    copyFileSync(join(here, "..", "fixtures", "parent-with-sleep-child.mjs"), wrapper);
+    chmodSync(wrapper, 0o755);
+    const runner = new ClaudeRunner({
+      binary: "node",
+      extraArgsBefore: [wrapper],
+      cwd: dir,
+    });
+    let childPid: number | undefined;
+    const p = runner.run({
+      stdin: "",
+      sessionMode: { kind: "new", sessionId: "x" },
+      onLine: (line) => {
+        try {
+          const parsed = JSON.parse(line);
+          if (typeof parsed.childPid === "number") childPid = parsed.childPid;
+        } catch { /* ignore non-json lines */ }
+      },
+    });
+    // Wait until the wrapper has spawned its child and reported the PID.
+    await new Promise<void>((resolve) => {
+      const tick = () => (childPid !== undefined ? resolve() : setTimeout(tick, 20));
+      tick();
+    });
+    expect(childPid).toBeGreaterThan(0);
+    runner.stop();
+    await p;
+    // After stop, both parent and grandchild should be dead.
+    // process.kill(pid, 0) throws ESRCH if pid doesn't exist.
+    // Wait a beat for SIGTERM to propagate.
+    await new Promise((r) => setTimeout(r, 100));
+    let grandchildAlive = true;
+    try {
+      process.kill(childPid!, 0);
+    } catch {
+      grandchildAlive = false;
+    }
+    expect(grandchildAlive).toBe(false);
+  });
 });

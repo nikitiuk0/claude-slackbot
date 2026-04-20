@@ -43,6 +43,9 @@ export class ClaudeRunner {
     const child = spawn(this.opts.binary, args, {
       cwd: this.opts.cwd,
       stdio: ["pipe", "pipe", "pipe"],
+      // Own process group so stop() can SIGTERM the whole tree
+      // (claude + its tool subprocesses like Bash/sleep).
+      detached: true,
     });
     this.child = child;
 
@@ -72,6 +75,19 @@ export class ClaudeRunner {
   }
 
   stop(): void {
-    if (this.child && !this.child.killed) this.child.kill("SIGTERM");
+    const child = this.child;
+    if (!child || child.killed || child.pid === undefined) return;
+    const pgid = child.pid;
+    try {
+      process.kill(-pgid, "SIGTERM");
+    } catch {
+      // Group may already be gone; fall back to direct kill.
+      try { child.kill("SIGTERM"); } catch { /* ignore */ }
+    }
+    setTimeout(() => {
+      if (this.child && !this.child.killed) {
+        try { process.kill(-pgid, "SIGKILL"); } catch { /* ignore */ }
+      }
+    }, 2000).unref();
   }
 }
