@@ -59,6 +59,7 @@ export type Reaction =
 export type SlackClientFacade = {
   postReply: (channel: string, threadTs: string, text: string) => Promise<{ ts: string }>;
   editMessage: (channel: string, ts: string, text: string) => Promise<void>;
+  deleteMessage: (channel: string, ts: string) => Promise<void>;
   addReaction: (channel: string, ts: string, name: Reaction) => Promise<void>;
   permalink: (channel: string, ts: string) => Promise<string>;
 };
@@ -75,6 +76,16 @@ export function makeSlackClientFacade(client: any): SlackClientFacade {
     },
     async editMessage(channel, ts, text) {
       await client.chat.update({ channel, ts, text });
+    },
+    async deleteMessage(channel, ts) {
+      try {
+        await client.chat.delete({ channel, ts });
+      } catch (err: any) {
+        const code = err?.data?.error;
+        // Already gone is fine.
+        if (code === "message_not_found") return;
+        throw err;
+      }
     },
     async addReaction(channel, ts, name) {
       try {

@@ -103,6 +103,28 @@ export class Orchestrator {
 
   constructor(private readonly d: OrchestratorDeps) {}
 
+  /**
+   * Replace the in-progress status message with a fresh terminal reply so
+   * Slack notifies subscribers (edits don't trigger notifications).
+   * Best-effort delete: if it fails, we still post the new message.
+   */
+  private async replaceStatusWithFinalReply(
+    channelId: string,
+    threadTs: string,
+    statusMsgTs: string | undefined,
+    text: string,
+    jlog: Logger
+  ): Promise<void> {
+    if (statusMsgTs) {
+      try {
+        await this.d.slack.deleteMessage(channelId, statusMsgTs);
+      } catch (err) {
+        jlog.warn({ err, statusMsgTs }, "failed to delete in-progress status message");
+      }
+    }
+    await this.d.slack.postReply(channelId, threadTs, text);
+  }
+
   async start(): Promise<void> {
     this.d.log.info("orchestrator starting");
     await this.d.state.load();
@@ -162,14 +184,17 @@ export class Orchestrator {
       if (idle >= this.d.stallHardStopMs && slot.stopController && !j.hardStopped) {
         j.hardStopped = true;
         j.terminatedBy = "watchdog-hard-stop";
-        (j.log ?? this.d.log).warn(
+        const wlog = j.log ?? this.d.log;
+        wlog.warn(
           { idleMs: idle, idleHours: (idle / 3_600_000).toFixed(1) },
           "watchdog hard-stop (24h ceiling)"
         );
-        void this.d.slack.editMessage(
+        void this.replaceStatusWithFinalReply(
           j.mention.channelId,
+          j.mention.threadTs,
           j.statusMsgTs,
-          "Auto-stopped after 24h. Session preserved — re-mention to resume."
+          "Auto-stopped after 24h. Session preserved — re-mention to resume.",
+          wlog
         );
         void this.d.slack.addReaction(j.mention.channelId, j.mention.triggerMsgTs, "x");
         const s = this.d.state.getThread(j.mention.threadTs);
@@ -430,19 +455,13 @@ export class Orchestrator {
       const jlog = job.log ?? this.d.log;
       jlog.error({ err }, "executeJob crashed");
       try {
-        if (job.statusMsgTs) {
-          await this.d.slack.editMessage(
-            job.mention.channelId,
-            job.statusMsgTs,
-            "Internal daemon error — see logs."
-          );
-        } else {
-          await this.d.slack.postReply(
-            job.mention.channelId,
-            job.mention.threadTs,
-            "Internal daemon error — see logs."
-          );
-        }
+        await this.replaceStatusWithFinalReply(
+          job.mention.channelId,
+          job.mention.threadTs,
+          job.statusMsgTs,
+          "Internal daemon error — see logs.",
+          jlog
+        );
         await this.d.slack.addReaction(job.mention.channelId, job.mention.triggerMsgTs, "x");
         const s = this.d.state.getThread(job.mention.threadTs);
         if (s) {
@@ -563,7 +582,7 @@ export class Orchestrator {
 
     if (result.exitCode === 0 && summary) {
       jlog.info("job done (with summary)");
-      await this.d.slack.editMessage(channelId, status.ts, summary);
+      await this.replaceStatusWithFinalReply(channelId, threadTs, status.ts, summary, jlog);
       await this.d.slack.addReaction(channelId, triggerMsgTs, "white_check_mark");
       await this.d.state.upsertThread(threadTs, {
         sessionId: finalSessionId,
@@ -579,10 +598,12 @@ export class Orchestrator {
       jlog.warn("job done (no structured summary returned)");
       const text =
         milestones.length > 0 ? milestones.join("\n") : "(no output)";
-      await this.d.slack.editMessage(
+      await this.replaceStatusWithFinalReply(
         channelId,
+        threadTs,
         status.ts,
-        `${text}\n\n_(no structured summary returned)_`
+        `${text}\n\n_(no structured summary returned)_`,
+        jlog
       );
       await this.d.slack.addReaction(channelId, triggerMsgTs, "white_check_mark");
       await this.d.slack.addReaction(channelId, triggerMsgTs, "shrug");
@@ -602,10 +623,12 @@ export class Orchestrator {
         "job errored"
       );
       const tail = result.stderr.split("\n").slice(-20).join("\n");
-      await this.d.slack.editMessage(
+      await this.replaceStatusWithFinalReply(
         channelId,
+        threadTs,
         status.ts,
-        `Errored.\n\n\`\`\`\n${tail}\n\`\`\``
+        `Errored.\n\n\`\`\`\n${tail}\n\`\`\``,
+        jlog
       );
       await this.d.slack.addReaction(channelId, triggerMsgTs, "x");
       await this.d.state.upsertThread(threadTs, {

@@ -28,6 +28,7 @@ function deps(over: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
     slack: {
       postReply: vi.fn(async () => ({ ts: "100.001" })),
       editMessage: vi.fn(async () => {}),
+      deleteMessage: vi.fn(async () => {}),
       addReaction: vi.fn(async () => {}),
       permalink: vi.fn(async () => "https://slack/permalink"),
     },
@@ -86,6 +87,21 @@ describe("Orchestrator", () => {
     const finalState = upserts[upserts.length - 1][1];
     expect(finalState.sessionId).toBe("S");
     expect(finalState.status).toBe("done");
+  });
+
+  it("on completion, deletes the in-progress message and posts the summary as a new reply", async () => {
+    const d = deps();
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m());
+    await o.idle();
+    // Status message ts comes from postReply mock returning "100.001".
+    expect(d.slack.deleteMessage).toHaveBeenCalledWith("C1", "100.001");
+    // Two postReply calls: the initial "Working on it…" and the final summary.
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    expect(replyCalls.length).toBe(2);
+    expect(replyCalls[0][2]).toMatch(/Working on it/);
+    expect(replyCalls[1][2]).toMatch(/Summary: ok/);
   });
 
   it("queues a follow-up on the same thread (single-flight)", async () => {
@@ -211,16 +227,20 @@ describe("Orchestrator watchdog", () => {
     await p;
     o.stop();
     vi.useRealTimers();
-    const editCalls = (d.slack.editMessage as any).mock.calls;
-    const autoStopMsg = editCalls.some((c: any[]) =>
+    // The terminal "Auto-stopped" notice goes out as a NEW reply (so Slack
+    // notifies subscribers), not an edit of the in-progress message.
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    const autoStopMsg = replyCalls.some((c: any[]) =>
       typeof c[2] === "string" && c[2].includes("Auto-stopped after 24h")
     );
     expect(autoStopMsg).toBe(true);
-    // Should NOT have an "Errored.\n\n```" message from the error branch
-    const errored = editCalls.some((c: any[]) =>
+    // The in-progress message should be deleted before the new reply.
+    expect(d.slack.deleteMessage).toHaveBeenCalledWith("C1", "100.001");
+    // The error-branch "Errored." message must NOT be sent (terminatedBy guard).
+    const erroredReply = replyCalls.some((c: any[]) =>
       typeof c[2] === "string" && c[2].startsWith("Errored.")
     );
-    expect(errored).toBe(false);
+    expect(erroredReply).toBe(false);
   });
 
   it("queue-pressure message lists stale running jobs with permalinks", async () => {
@@ -238,6 +258,7 @@ describe("Orchestrator watchdog", () => {
       slack: {
         postReply: vi.fn(async () => ({ ts: "100.001" })),
         editMessage: vi.fn(async () => {}),
+        deleteMessage: vi.fn(async () => {}),
         addReaction: vi.fn(async () => {}),
         permalink: vi.fn(async () => "https://slack/perm/x"),
       },
