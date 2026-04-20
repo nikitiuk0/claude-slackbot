@@ -82,6 +82,8 @@ type Job = {
   terminatedBy?: "stop" | "nudge" | "reset" | "watchdog-hard-stop";
   /** Set when watchdog hard-stop fires, to prevent duplicate firings. */
   hardStopped?: boolean;
+  /** Per-job child logger with thread/user/event context baked in. */
+  log?: Logger;
 };
 
 type ThreadSlot = {
@@ -100,9 +102,15 @@ export class Orchestrator {
   constructor(private readonly d: OrchestratorDeps) {}
 
   async start(): Promise<void> {
+    this.d.log.info("orchestrator starting");
     await this.d.state.load();
     const leftovers = this.d.state.allRunning();
+    if (leftovers.length > 0) {
+      this.d.log.info({ count: leftovers.length }, "found leftover running jobs from previous daemon");
+    }
     for (const { threadTs, state } of leftovers) {
+      const jlog = this.d.log.child({ threadTs, channelId: state.channelId, sessionId: state.sessionId });
+      jlog.info("marking leftover job as interrupted");
       try {
         await this.d.slack.postReply(
           state.channelId,
@@ -110,7 +118,7 @@ export class Orchestrator {
           "Daemon restarted; that run was interrupted. Re-mention to resume."
         );
       } catch (err) {
-        this.d.log.error({ err }, "failed to post interrupt notice");
+        jlog.error({ err }, "failed to post interrupt notice");
       }
       await this.d.state.upsertThread(threadTs, {
         ...state,
@@ -119,6 +127,7 @@ export class Orchestrator {
       });
     }
     this.watchdogTimer = setInterval(() => this.tickWatchdog(), 30_000);
+    this.d.log.info({ maxParallelJobs: this.d.maxParallelJobs }, "orchestrator ready");
   }
 
   stop(): void {
@@ -126,6 +135,7 @@ export class Orchestrator {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = null;
     }
+    this.d.log.info("orchestrator stopped");
   }
 
   private tickWatchdog(): void {
@@ -136,6 +146,10 @@ export class Orchestrator {
       const idle = now - j.lastEventAt;
       if (!j.softNoticed && idle >= this.d.stallSoftNoticeMs) {
         j.softNoticed = true;
+        (j.log ?? this.d.log).warn(
+          { idleMs: idle, idleMin: Math.round(idle / 60_000) },
+          "watchdog soft notice (no progress)"
+        );
         void this.d.slack.editMessage(
           j.mention.channelId,
           j.statusMsgTs,
@@ -146,6 +160,10 @@ export class Orchestrator {
       if (idle >= this.d.stallHardStopMs && slot.stopController && !j.hardStopped) {
         j.hardStopped = true;
         j.terminatedBy = "watchdog-hard-stop";
+        (j.log ?? this.d.log).warn(
+          { idleMs: idle, idleHours: (idle / 3_600_000).toFixed(1) },
+          "watchdog hard-stop (24h ceiling)"
+        );
         void this.d.slack.editMessage(
           j.mention.channelId,
           j.statusMsgTs,
@@ -166,9 +184,18 @@ export class Orchestrator {
   }
 
   async enqueue(mention: IncomingMention): Promise<void> {
+    const mlog = this.d.log.child({
+      threadTs: mention.threadTs,
+      channelId: mention.channelId,
+      userId: mention.userId,
+      eventId: mention.eventId,
+    });
+    mlog.info({ cleanTextLen: mention.cleanText.length }, "mention received");
+
     const cmd = mention.cleanText.trim().toLowerCase();
     if (cmd === "stop" || cmd === "nudge" || cmd === "reset" || cmd === "status") {
-      return this.handleCommand(cmd, mention);
+      mlog.info({ cmd }, "command dispatch");
+      return this.handleCommand(cmd, mention, mlog);
     }
 
     const slot = this.threads.get(mention.threadTs) ?? {
@@ -179,6 +206,7 @@ export class Orchestrator {
     this.threads.set(mention.threadTs, slot);
 
     if (slot.running) {
+      mlog.info("queued (per-thread, single-flight)");
       if (slot.queued) {
         await this.d.slack.addReaction(
           mention.channelId,
@@ -186,11 +214,15 @@ export class Orchestrator {
           "arrows_counterclockwise"
         );
       }
-      slot.queued = { mention };
+      slot.queued = { mention, log: mlog };
       return;
     }
 
     if (this.inFlight >= this.d.maxParallelJobs) {
+      mlog.info(
+        { inFlight: this.inFlight, cap: this.d.maxParallelJobs, queueDepth: this.globalQueue.length + 1 },
+        "queued (global parallel cap reached)"
+      );
       await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "hourglass_flowing_sand");
       const stale: string[] = [];
       for (const slot of this.threads.values()) {
@@ -210,11 +242,11 @@ export class Orchestrator {
         lines.push(...stale);
       }
       await this.d.slack.postReply(mention.channelId, mention.threadTs, lines.join("\n"));
-      this.globalQueue.push({ mention });
+      this.globalQueue.push({ mention, log: mlog });
       return;
     }
 
-    this.startJob({ mention });
+    this.startJob({ mention, log: mlog });
   }
 
   async idle(): Promise<void> {
@@ -225,7 +257,8 @@ export class Orchestrator {
 
   private async handleCommand(
     cmd: "stop" | "nudge" | "reset" | "status",
-    mention: IncomingMention
+    mention: IncomingMention,
+    mlog: Logger = this.d.log
   ): Promise<void> {
     const slot = this.threads.get(mention.threadTs);
 
@@ -249,6 +282,7 @@ export class Orchestrator {
     }
 
     if (cmd === "stop") {
+      const wasRunning = !!slot?.running;
       if (slot?.running) slot.running.terminatedBy = "stop";
       if (slot?.running && slot.stopController) slot.stopController.stop();
       await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "stop_button");
@@ -261,19 +295,24 @@ export class Orchestrator {
         });
       }
       await this.d.slack.postReply(mention.channelId, mention.threadTs, "Stopped. Re-mention to resume.");
+      mlog.info({ wasRunning }, "stop processed");
       return;
     }
 
     if (cmd === "reset") {
+      const wasRunning = !!slot?.running;
       if (slot?.running) slot.running.terminatedBy = "reset";
       if (slot?.running && slot.stopController) slot.stopController.stop();
       await this.d.state.deleteThread(mention.threadTs);
       await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "broom");
       await this.d.slack.postReply(mention.channelId, mention.threadTs, "Session reset. Next mention will start fresh.");
+      mlog.info({ wasRunning }, "reset processed");
       return;
     }
 
     if (cmd === "nudge") {
+      const wasRunning = !!slot?.running;
+      mlog.info({ wasRunning }, "nudge processed");
       if (slot?.running) {
         // Mark the running job so executeJob skips its post-run pipeline.
         slot.running.terminatedBy = "nudge";
@@ -292,7 +331,7 @@ export class Orchestrator {
             "arrows_counterclockwise"
           );
         }
-        slot.queued = { mention: nudgeMention };
+        slot.queued = { mention: nudgeMention, log: mlog };
         if (slot.stopController) slot.stopController.stop();
       } else {
         // No running job — just fire the nudge immediately as a new run.
@@ -302,6 +341,7 @@ export class Orchestrator {
             cleanText:
               "You haven't made progress recently. Reassess what's blocking you and either ask a clarifying question or pick a different approach.",
           },
+          log: mlog,
         });
       }
     }
@@ -351,8 +391,45 @@ export class Orchestrator {
   }
 
   private async executeJob(job: Job): Promise<void> {
+    try {
+      await this.executeJobInner(job);
+    } catch (err) {
+      const jlog = job.log ?? this.d.log;
+      jlog.error({ err }, "executeJob crashed");
+      try {
+        if (job.statusMsgTs) {
+          await this.d.slack.editMessage(
+            job.mention.channelId,
+            job.statusMsgTs,
+            "Internal daemon error — see logs."
+          );
+        } else {
+          await this.d.slack.postReply(
+            job.mention.channelId,
+            job.mention.threadTs,
+            "Internal daemon error — see logs."
+          );
+        }
+        await this.d.slack.addReaction(job.mention.channelId, job.mention.triggerMsgTs, "x");
+        const s = this.d.state.getThread(job.mention.threadTs);
+        if (s) {
+          await this.d.state.upsertThread(job.mention.threadTs, {
+            ...s,
+            status: "errored",
+            updatedAt: new Date(this.d.nowMs()).toISOString(),
+          });
+        }
+      } catch (cleanupErr) {
+        jlog.error({ cleanupErr }, "failed to surface crash to Slack");
+      }
+    }
+  }
+
+  private async executeJobInner(job: Job): Promise<void> {
     const { mention } = job;
     const { channelId, threadTs, triggerMsgTs, cleanText } = mention;
+    const jlog = job.log ?? this.d.log;
+    jlog.info({ inFlight: this.inFlight }, "job execute start");
 
     await this.d.slack.addReaction(channelId, triggerMsgTs, "thinking_face");
     const status = await this.d.slack.postReply(
@@ -371,6 +448,10 @@ export class Orchestrator {
     const sessionMode = existing
       ? ({ kind: "resume" as const, sessionId: existing.sessionId })
       : ({ kind: "new" as const, sessionId: newSessionId });
+    jlog.info(
+      { sessionId: newSessionId, sessionMode: sessionMode.kind, statusMsgTs: status.ts },
+      "spawning claude session"
+    );
 
     const { rendered } = await this.d.fetchThread(channelId, threadTs);
     const stdin = (existing ? this.d.buildFollowUp : this.d.buildInitial)({
@@ -425,9 +506,22 @@ export class Orchestrator {
     await parserDone;
     await coalescer.flush().catch(() => {});
 
+    jlog.info(
+      {
+        exitCode: result.exitCode,
+        signal: result.signal,
+        milestoneCount: milestones.length,
+        hasSummary: summary !== null,
+        terminatedBy: job.terminatedBy ?? null,
+        observedSessionId,
+      },
+      "claude run finished"
+    );
+
     // If a command handler or watchdog already handled Slack + state updates,
     // skip the normal post-run pipeline to avoid clobbering their work.
     if (job.terminatedBy) {
+      jlog.info({ terminatedBy: job.terminatedBy }, "skipping post-run pipeline (terminated)");
       return;
     }
 
@@ -435,6 +529,7 @@ export class Orchestrator {
     const ts = new Date(this.d.nowMs()).toISOString();
 
     if (result.exitCode === 0 && summary) {
+      jlog.info("job done (with summary)");
       await this.d.slack.editMessage(channelId, status.ts, summary);
       await this.d.slack.addReaction(channelId, triggerMsgTs, "white_check_mark");
       await this.d.state.upsertThread(threadTs, {
@@ -448,6 +543,7 @@ export class Orchestrator {
         lastEventAt: ts,
       });
     } else if (result.exitCode === 0) {
+      jlog.warn("job done (no structured summary returned)");
       const text =
         milestones.length > 0 ? milestones.join("\n") : "(no output)";
       await this.d.slack.editMessage(
@@ -468,6 +564,10 @@ export class Orchestrator {
         lastEventAt: ts,
       });
     } else {
+      jlog.error(
+        { exitCode: result.exitCode, signal: result.signal, stderrTail: result.stderr.split("\n").slice(-5).join("\n") },
+        "job errored"
+      );
       const tail = result.stderr.split("\n").slice(-20).join("\n");
       await this.d.slack.editMessage(
         channelId,

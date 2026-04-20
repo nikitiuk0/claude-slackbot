@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import type { Logger } from "../log.js";
 
 export type SessionMode =
   | { kind: "new"; sessionId: string }
@@ -16,6 +17,8 @@ export type RunnerOptions = {
   /** Args inserted before the standard claude flags (used by tests only). */
   extraArgsBefore?: string[];
   cwd: string;
+  /** Optional logger; if omitted, runner is silent. */
+  log?: Logger;
 };
 
 export class ClaudeRunner {
@@ -48,6 +51,16 @@ export class ClaudeRunner {
       detached: true,
     });
     this.child = child;
+    this.opts.log?.info(
+      {
+        pid: child.pid,
+        binary: this.opts.binary,
+        cwd: this.opts.cwd,
+        sessionMode: input.sessionMode.kind,
+        sessionId: input.sessionMode.sessionId,
+      },
+      "claude subprocess spawned"
+    );
 
     const stderrChunks: Buffer[] = [];
     child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
@@ -63,11 +76,17 @@ export class ClaudeRunner {
     const result = await new Promise<RunResult>((resolve) => {
       child.once("close", (code, signal) => {
         rl.close();
-        resolve({
-          exitCode: code,
-          signal,
-          stderr: Buffer.concat(stderrChunks).toString("utf8"),
-        });
+        const stderr = Buffer.concat(stderrChunks).toString("utf8");
+        this.opts.log?.info(
+          {
+            pid: child.pid,
+            exitCode: code,
+            signal,
+            stderrBytes: stderr.length,
+          },
+          "claude subprocess exited"
+        );
+        resolve({ exitCode: code, signal, stderr });
       });
     });
     this.child = null;
@@ -78,6 +97,7 @@ export class ClaudeRunner {
     const child = this.child;
     if (!child || child.killed || child.pid === undefined) return;
     const pgid = child.pid;
+    this.opts.log?.info({ pid: pgid }, "stopping claude subprocess group (SIGTERM)");
     try {
       process.kill(-pgid, "SIGTERM");
     } catch {
@@ -86,6 +106,7 @@ export class ClaudeRunner {
     }
     setTimeout(() => {
       if (this.child && !this.child.killed) {
+        this.opts.log?.warn({ pid: pgid }, "subprocess group still alive after 2s; sending SIGKILL");
         try { process.kill(-pgid, "SIGKILL"); } catch { /* ignore */ }
       }
     }, 2000).unref();

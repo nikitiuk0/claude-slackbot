@@ -13,6 +13,7 @@ const EnvSchema = z.object({
   LOG_LEVEL: z
     .enum(["trace", "debug", "info", "warn", "error", "fatal"])
     .default("info"),
+  LOG_FILE: z.string().default("./data/logs/daemon.log"),
 });
 
 const JsonSchema = z.object({
@@ -30,6 +31,7 @@ export type Config = {
   slackAppToken: string;
   allowedUserIds: string[];
   logLevel: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+  logFile: string;
   workdir: string;
   claudeBinary: string;
   maxParallelJobs: number;
@@ -50,6 +52,7 @@ export function loadConfig(input: {
     slackAppToken: env.SLACK_APP_TOKEN,
     allowedUserIds: env.ALLOWED_USER_IDS,
     logLevel: env.LOG_LEVEL,
+    logFile: env.LOG_FILE,
     ...json,
   };
 }

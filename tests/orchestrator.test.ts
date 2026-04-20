@@ -38,7 +38,19 @@ function deps(over: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
       upsertThread: vi.fn(async () => {}),
       deleteThread: vi.fn(async () => {}),
     },
-    log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as any,
+    log: (() => {
+      const noop = () => {};
+      const stub: any = {
+        info: noop,
+        warn: noop,
+        error: noop,
+        debug: noop,
+        trace: noop,
+        fatal: noop,
+      };
+      stub.child = () => stub;
+      return stub;
+    })(),
     timeZone: "UTC",
     systemPrompt: "SYS",
     ownerDisplayName: "alice",

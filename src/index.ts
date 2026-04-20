@@ -20,8 +20,11 @@ async function main() {
   dotenv.config();
   const json = JSON.parse(await fs.readFile("config.json", "utf8"));
   const cfg = loadConfig({ env: process.env, json });
-  const log = createLogger(cfg.logLevel);
-  log.info({ workdir: cfg.workdir }, "starting daemon");
+  const log = createLogger({ level: cfg.logLevel, logFile: cfg.logFile });
+  log.info(
+    { workdir: cfg.workdir, logFile: cfg.logFile, logLevel: cfg.logLevel },
+    "starting daemon"
+  );
 
   const state = new StateStore("./data/state.json");
   const gate = new IdentityGate({
@@ -36,6 +39,7 @@ async function main() {
   const runner = new ClaudeRunner({
     binary: cfg.claudeBinary,
     cwd: cfg.workdir,
+    log: log.child({ component: "claude-runner" }),
   });
 
   // We need slackFacade to construct the orchestrator, but we also need the
