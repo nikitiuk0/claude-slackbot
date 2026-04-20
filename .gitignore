@@ -10,3 +10,4 @@ dist/
 .DS_Store
 .vitest-cache/
 coverage/
+sandbox-test/
