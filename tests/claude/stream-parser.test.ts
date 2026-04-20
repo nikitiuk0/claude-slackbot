@@ -55,6 +55,38 @@ describe("parseStream", () => {
     expect(events.find((e) => e.kind === "summary")).toBeDefined();
   });
 
+  it("compacts multi-line Bash commands to a single-line milestone", async () => {
+    const sql = `SELECT\n  col1,\n  col2\nFROM big_table\nWHERE x = 1`;
+    const ndjson = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", name: "Bash", input: { command: `psql -c "${sql}"` } }],
+      },
+    });
+    const events = await collect(ndjson);
+    const milestone = events.find((e) => e.kind === "milestone");
+    expect(milestone).toBeDefined();
+    const text = (milestone as any).text as string;
+    // Must fit on one line — Slack inline code doesn't span lines.
+    expect(text.includes("\n")).toBe(false);
+    // Must end with the ellipsis indicator since we dropped lines.
+    expect(text).toMatch(/…`$/);
+    // Must be wrapped in single backticks.
+    expect(text).toMatch(/^Running `/);
+  });
+
+  it("does not append ellipsis for single-line commands within the length cap", async () => {
+    const ndjson = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }],
+      },
+    });
+    const events = await collect(ndjson);
+    const milestone = events.find((e) => e.kind === "milestone");
+    expect((milestone as any).text).toBe("Running `npm test`");
+  });
+
   it("emits structured error info for non-success result lines", async () => {
     const events = await collect(
       [

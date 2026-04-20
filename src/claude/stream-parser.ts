@@ -40,6 +40,20 @@ const ResultLine = z.object({
 
 const SUMMARY_RE = /<slack-summary>([\s\S]*?)<\/slack-summary>/;
 
+/**
+ * Squash a shell command (or any command-like string) into a single line
+ * suitable for inline `backticks` in Slack. First non-empty line only,
+ * capped to ~160 chars, with a trailing ellipsis if anything was dropped.
+ */
+function compactCommand(cmd: string): string {
+  const firstLine = cmd.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  const MAX = 160;
+  const truncatedLines = cmd.split("\n").length > 1;
+  const truncatedChars = firstLine.length > MAX;
+  const body = truncatedChars ? firstLine.slice(0, MAX) : firstLine;
+  return truncatedLines || truncatedChars ? `${body} …` : body;
+}
+
 function toolMilestone(name: string, input: Record<string, unknown> | undefined): string | null {
   const file = input?.file_path as string | undefined;
   const command = input?.command as string | undefined;
@@ -51,11 +65,11 @@ function toolMilestone(name: string, input: Record<string, unknown> | undefined)
     case "Write":
       return file ? `Editing ${file}` : "Editing a file";
     case "Bash":
-      return command ? `Running \`${command}\`` : "Running a shell command";
+      return command ? `Running \`${compactCommand(command)}\`` : "Running a shell command";
     case "Grep":
-      return pattern ? `Searching for ${pattern}` : "Searching";
+      return pattern ? `Searching for \`${compactCommand(pattern)}\`` : "Searching";
     case "Glob":
-      return pattern ? `Listing files matching ${pattern}` : "Listing files";
+      return pattern ? `Listing files matching \`${compactCommand(pattern)}\`` : "Listing files";
     case "WebFetch":
       return `Fetching ${(input?.url as string) ?? "a URL"}`;
     case "Task":
