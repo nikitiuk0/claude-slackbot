@@ -33,6 +33,7 @@ export class ClaudeRunner {
       "--print",
       "--output-format",
       "stream-json",
+      "--verbose",
       "--include-partial-messages",
       "--dangerously-skip-permissions",
       input.sessionMode.kind === "new" ? "--session-id" : "--resume",
