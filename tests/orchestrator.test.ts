@@ -40,6 +40,11 @@ function deps(over: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
       upsertThread: vi.fn(async () => {}),
       deleteThread: vi.fn(async () => {}),
     },
+    milestones: {
+      append: vi.fn(async () => {}),
+      readAll: vi.fn(async () => []),
+      readLastRun: vi.fn(async () => []),
+    } as any,
     log: (() => {
       const noop = () => {};
       const stub: any = {
@@ -474,7 +479,57 @@ describe("Orchestrator commands", () => {
     expect(replyText).toContain("alias: `ping`");
     expect(replyText).toContain("`reset`");
     expect(replyText).toContain("`status`");
+    expect(replyText).toContain("`history`");
     expect(replyText).toContain("`help`");
+  });
+
+  it("history command renders the last run from MilestonesStore", async () => {
+    const d = deps({
+      milestones: {
+        append: vi.fn(async () => {}),
+        readAll: vi.fn(async () => []),
+        readLastRun: vi.fn(async () => [
+          {
+            ts: "2026-04-19T20:00:00.000Z",
+            kind: "start",
+            sessionId: "abc12345-xxx",
+            sessionMode: "new",
+            instruction: "fix the 500",
+          },
+          { ts: "2026-04-19T20:00:01.000Z", kind: "milestone", text: "Reading foo.ts" },
+          { ts: "2026-04-19T20:00:02.000Z", kind: "milestone", text: "Editing foo.ts" },
+          {
+            ts: "2026-04-19T20:00:03.000Z",
+            kind: "end",
+            status: "done",
+            exitCode: 0,
+            signal: null,
+          },
+        ]),
+      } as any,
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m({ cleanText: "history" }));
+    o.stop();
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    const replyText = replyCalls[replyCalls.length - 1][2];
+    expect(replyText).toContain("History (most recent run):");
+    expect(replyText).toContain("20:00:00 START session=abc12345");
+    expect(replyText).toContain("«fix the 500»");
+    expect(replyText).toContain("Reading foo.ts");
+    expect(replyText).toContain("Editing foo.ts");
+    expect(replyText).toContain("END   done exit=0");
+  });
+
+  it("history command says 'No history yet' when none persisted", async () => {
+    const d = deps();
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m({ cleanText: "history" }));
+    o.stop();
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    expect(replyCalls[replyCalls.length - 1][2]).toContain("No history yet");
   });
 
   it("ping is treated as a nudge alias", async () => {

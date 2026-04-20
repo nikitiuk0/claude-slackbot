@@ -3,6 +3,7 @@ import { parseStream, type ParseEvent } from "./claude/stream-parser.js";
 import { EditCoalescer, type SlackClientFacade } from "./slack/updater.js";
 import type { IncomingMention } from "./slack/adapter.js";
 import type { ThreadState } from "./state/store.js";
+import type { MilestonesStore, HistoryEntry } from "./state/milestones.js";
 import type { RenderedMessage } from "./prompt/build-input.js";
 import type { Logger } from "./log.js";
 
@@ -66,6 +67,7 @@ export type OrchestratorDeps = {
   runClaude: RunClaudeFn;
   slack: SlackClientFacade;
   state: StateApi;
+  milestones: MilestonesStore;
   log: Logger;
   timeZone: string;
   systemPrompt: string;
@@ -240,7 +242,7 @@ export class Orchestrator {
     const cmd =
       rawCmd === "ping" ? "nudge" :
       rawCmd === "stop" || rawCmd === "nudge" || rawCmd === "reset" ||
-      rawCmd === "status" || rawCmd === "help" ? rawCmd :
+      rawCmd === "status" || rawCmd === "help" || rawCmd === "history" ? rawCmd :
       null;
     if (cmd) {
       mlog.info({ cmd, alias: rawCmd !== cmd ? rawCmd : undefined }, "command dispatch");
@@ -305,7 +307,7 @@ export class Orchestrator {
   }
 
   private async handleCommand(
-    cmd: "stop" | "nudge" | "reset" | "status" | "help",
+    cmd: "stop" | "nudge" | "reset" | "status" | "help" | "history",
     mention: IncomingMention,
     mlog: Logger = this.d.log
   ): Promise<void> {
@@ -321,10 +323,29 @@ export class Orchestrator {
           "• `nudge` (alias: `ping`) — wake me up if I'm stuck; resumes the session with a reassess prompt",
           "• `reset` — wipe my session memory for this thread; next mention starts a brand-new run",
           "• `status` — show current state for this thread + how to resume the session manually",
+          "• `history` — show the milestones from the most recent run on this thread",
           "• `help` — show this list",
           "",
           "To start work: just mention me with what you want me to do.",
         ].join("\n")
+      );
+      return;
+    }
+
+    if (cmd === "history") {
+      const entries = await this.d.milestones.readLastRun(mention.threadTs);
+      if (entries.length === 0) {
+        await this.d.slack.postReply(
+          mention.channelId,
+          mention.threadTs,
+          "No history yet for this thread."
+        );
+        return;
+      }
+      await this.d.slack.postReply(
+        mention.channelId,
+        mention.threadTs,
+        formatHistory(entries)
       );
       return;
     }
@@ -541,6 +562,13 @@ export class Orchestrator {
       updatedAt: startedAt,
       lastEventAt: startedAt,
     });
+    await this.d.milestones.append(threadTs, {
+      ts: startedAt,
+      kind: "start",
+      sessionId: existing?.sessionId ?? newSessionId,
+      sessionMode: sessionMode.kind,
+      instruction: cleanText,
+    });
 
     job.lastEventAt = this.d.nowMs();
 
@@ -557,6 +585,14 @@ export class Orchestrator {
           job.lastEventAt = this.d.nowMs();
           job.lastMilestone = ev.text;
           coalescer.update(ev.text);
+          // Persist for `history` command. Best-effort — ignore disk hiccups.
+          this.d.milestones
+            .append(threadTs, {
+              ts: new Date(this.d.nowMs()).toISOString(),
+              kind: "milestone",
+              text: ev.text,
+            })
+            .catch((err) => jlog.warn({ err }, "failed to persist milestone"));
         } else if (ev.kind === "summary") {
           summary = ev.text;
         }
@@ -592,6 +628,26 @@ export class Orchestrator {
     // here (and runs that were terminated externally) shouldn't leave a
     // 🤔 hanging next to the final ✅/❌/🛑.
     await this.clearThinkingReaction(channelId, triggerMsgTs, jlog);
+
+    // Decide the terminal status now so we can persist the run-end record
+    // exactly once (even on the terminatedBy fast-return path below).
+    const finalStatus =
+      job.terminatedBy === "stop" ? "stopped" :
+      job.terminatedBy === "reset" ? "reset" :
+      job.terminatedBy === "nudge" ? "stopped" :
+      job.terminatedBy === "watchdog-hard-stop" ? "errored" :
+      result.exitCode === 0 ? "done" :
+      "errored";
+    await this.d.milestones
+      .append(threadTs, {
+        ts: new Date(this.d.nowMs()).toISOString(),
+        kind: "end",
+        status: finalStatus,
+        exitCode: result.exitCode,
+        signal: result.signal,
+        terminatedBy: job.terminatedBy,
+      })
+      .catch((err) => jlog.warn({ err }, "failed to persist run-end"));
 
     // If a command handler or watchdog already handled Slack + state updates,
     // skip the normal post-run pipeline to avoid clobbering their work.
@@ -666,4 +722,44 @@ export class Orchestrator {
       });
     }
   }
+}
+
+/** Render the most recent run's history into a Slack-friendly code block. */
+export function formatHistory(entries: HistoryEntry[]): string {
+  const MAX_LINES = 60;
+  const lines: string[] = [];
+  for (const e of entries) {
+    const time = e.ts.slice(11, 19); // HH:MM:SS from ISO
+    if (e.kind === "start") {
+      lines.push(
+        `${time} START session=${e.sessionId.slice(0, 8)} (${e.sessionMode})  «${truncate(e.instruction, 120)}»`
+      );
+    } else if (e.kind === "milestone") {
+      lines.push(`${time}   ${e.text}`);
+    } else if (e.kind === "end") {
+      const tags = [e.status];
+      if (e.exitCode !== null) tags.push(`exit=${e.exitCode}`);
+      if (e.signal) tags.push(e.signal);
+      if (e.terminatedBy) tags.push(`by=${e.terminatedBy}`);
+      lines.push(`${time} END   ${tags.join(" ")}`);
+    }
+  }
+
+  let body: string;
+  if (lines.length <= MAX_LINES) {
+    body = lines.join("\n");
+  } else {
+    const head = lines.slice(0, 5);
+    const tail = lines.slice(-(MAX_LINES - 5));
+    body = [
+      ...head,
+      `… (${lines.length - head.length - tail.length} entries omitted) …`,
+      ...tail,
+    ].join("\n");
+  }
+  return ["History (most recent run):", "```", body, "```"].join("\n");
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
 }

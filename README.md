@@ -104,6 +104,7 @@ Mention the bot with one of these commands from anywhere in the thread:
 | `@claude-bot nudge` (alias: `ping`) | Stop the current run and immediately resume the session with a wake-up turn that asks Claude to reassess what's blocking it. Useful when Claude seems stuck in a loop. |
 | `@claude-bot reset` | Wipe the thread's session entirely. The next mention starts a brand-new Claude with no memory of prior turns. PRs Claude already pushed are not touched. Reaction → 🧹. |
 | `@claude-bot status` | Reply with the current state (`status`, `started_at`, `last_event_at`) plus a copy-paste `claude --resume <id>` command so you can take the session over in your terminal. |
+| `@claude-bot history` | Reply with the milestones from the most recent run on this thread (start, every tool/file event, end + status). Useful when the summary doesn't tell you everything you want to know. |
 | `@claude-bot help` | List all of the above. |
 
 Commands always work even if no run is in progress — they respond with a friendly no-op message if there's nothing to act on.
