@@ -306,7 +306,6 @@ export class Orchestrator {
           `status: ${s.status}`,
           `started_at: ${s.startedAt}`,
           `last_event_at: ${s.lastEventAt}`,
-          `session_id: ${s.sessionId}`,
           "",
           "Resume manually:",
           resumeSnippet,

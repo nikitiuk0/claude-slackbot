@@ -421,7 +421,7 @@ describe("Orchestrator commands", () => {
     const replyCalls = (d.slack.postReply as any).mock.calls;
     const replyText = replyCalls.find((c: any[]) => typeof c[2] === "string" && c[2].includes("status:"))[2];
     expect(replyText).toMatch(/status: done/);
-    expect(replyText).toMatch(/session_id: abc12345-aaaa-bbbb-cccc-ddddeeeeffff/);
+    expect(replyText).not.toMatch(/^session_id:/m);
     expect(replyText).toContain("Resume manually:");
     expect(replyText).toContain("cd /Users/me/work/sandbox");
     expect(replyText).toContain("claude --resume abc12345-aaaa-bbbb-cccc-ddddeeeeffff");
