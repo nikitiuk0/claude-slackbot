@@ -483,6 +483,49 @@ describe("Orchestrator commands", () => {
     expect(replyText).toContain("`help`");
   });
 
+  it("status appends the last few milestones from MilestonesStore", async () => {
+    const d = deps({
+      workdir: "/tmp/wd",
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => ({
+          sessionId: "abc12345-aaaa-bbbb-cccc-ddddeeeeffff",
+          status: "running",
+          startedAt: "2026-04-19T20:00:00Z",
+          lastEventAt: "2026-04-19T20:00:30Z",
+        } as any)),
+        allRunning: vi.fn(() => []),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      },
+      milestones: {
+        append: vi.fn(async () => {}),
+        readAll: vi.fn(async () => []),
+        readLastRun: vi.fn(async () => [
+          { ts: "2026-04-19T20:00:00.000Z", kind: "start", sessionId: "abc12345", sessionMode: "new", instruction: "fix it" },
+          { ts: "2026-04-19T20:00:05.000Z", kind: "milestone", text: "Reading a.ts" },
+          { ts: "2026-04-19T20:00:10.000Z", kind: "milestone", text: "Editing a.ts" },
+          { ts: "2026-04-19T20:00:15.000Z", kind: "milestone", text: "Editing b.ts" },
+          { ts: "2026-04-19T20:00:20.000Z", kind: "milestone", text: "Editing c.ts" },
+        ]),
+      } as any,
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m({ cleanText: "status" }));
+    o.stop();
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    const replyText = replyCalls.find((c: any[]) => typeof c[2] === "string" && c[2].includes("status:"))[2];
+    expect(replyText).toContain("Recent milestones:");
+    // Last 3 only.
+    expect(replyText).not.toContain("Reading a.ts");
+    expect(replyText).toContain("Editing a.ts");
+    expect(replyText).toContain("Editing b.ts");
+    expect(replyText).toContain("Editing c.ts");
+    // Resume snippet still present.
+    expect(replyText).toContain("claude --resume");
+  });
+
   it("history command renders the last run from MilestonesStore", async () => {
     const d = deps({
       milestones: {

@@ -362,18 +362,25 @@ export class Orchestrator {
         `claude --resume ${s.sessionId}`,
         "```",
       ].join("\n");
-      await this.d.slack.postReply(
-        mention.channelId,
-        mention.threadTs,
-        [
-          `status: ${s.status}`,
-          `started_at: ${s.startedAt}`,
-          `last_event_at: ${s.lastEventAt}`,
-          "",
-          "Resume manually:",
-          resumeSnippet,
-        ].join("\n")
-      );
+      const recentMilestones = await this.d.milestones
+        .readLastRun(mention.threadTs)
+        .then((entries) =>
+          entries.filter((e): e is Extract<typeof e, { kind: "milestone" }> => e.kind === "milestone").slice(-3)
+        )
+        .catch(() => []);
+      const lines = [
+        `status: ${s.status}`,
+        `started_at: ${s.startedAt}`,
+        `last_event_at: ${s.lastEventAt}`,
+      ];
+      if (recentMilestones.length > 0) {
+        lines.push("", "Recent milestones:");
+        for (const m of recentMilestones) {
+          lines.push(`• ${m.ts.slice(11, 19)}  ${m.text}`);
+        }
+      }
+      lines.push("", "Resume manually:", resumeSnippet);
+      await this.d.slack.postReply(mention.channelId, mention.threadTs, lines.join("\n"));
       return;
     }
 
