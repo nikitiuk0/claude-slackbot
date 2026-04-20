@@ -2,6 +2,8 @@
 
 A local Claude Code daemon you can `@mention` from Slack to do actual software engineering work on your laptop.
 
+<img width="410" height="816" alt="Screenshot 2026-04-20 at 2 15 41 AM" src="https://github.com/user-attachments/assets/156cabcb-f568-45bf-8967-64796ad1c4b4" />
+
 ## Overview
 
 `claude-slackbot` is a Node.js + TypeScript daemon that runs on your laptop, connects to Slack via Socket Mode, and puts Claude to work whenever you `@mention` it in a thread. Mention the bot in any channel it belongs to, and it spawns a local `claude` CLI session pointed at a configured working folder on your machine — Claude reads the codebase, edits files, runs tests, pushes branches, and opens draft PRs. When the work is done, the bot posts a structured summary back in the thread with a one-sentence recap, key decisions, and PR links. Follow-up mentions in the same thread resume the same Claude session, so you can iterate in place.
@@ -13,8 +15,6 @@ Key properties:
 - **Bounded blast radius.** Claude runs with `--dangerously-skip-permissions` but only inside one configured folder, and opens draft PRs by default.
 
 For full design rationale, architecture decisions, and failure-handling details, see [`docs/superpowers/specs/2026-04-19-claude-slackbot-design.md`](docs/superpowers/specs/2026-04-19-claude-slackbot-design.md).
-
-<img width="410" height="816" alt="Screenshot 2026-04-20 at 2 15 41 AM" src="https://github.com/user-attachments/assets/156cabcb-f568-45bf-8967-64796ad1c4b4" />
 
 
 ---
