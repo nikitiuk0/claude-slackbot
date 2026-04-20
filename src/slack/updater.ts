@@ -61,6 +61,7 @@ export type SlackClientFacade = {
   editMessage: (channel: string, ts: string, text: string) => Promise<void>;
   deleteMessage: (channel: string, ts: string) => Promise<void>;
   addReaction: (channel: string, ts: string, name: Reaction) => Promise<void>;
+  removeReaction: (channel: string, ts: string, name: Reaction) => Promise<void>;
   permalink: (channel: string, ts: string) => Promise<string>;
 };
 
@@ -95,6 +96,16 @@ export function makeSlackClientFacade(client: any): SlackClientFacade {
         // Reactions are decorative — never let a bad emoji name or duplicate
         // reaction crash the orchestrator pipeline.
         if (code === "already_reacted" || code === "invalid_name") return;
+        throw err;
+      }
+    },
+    async removeReaction(channel, ts, name) {
+      try {
+        await client.reactions.remove({ channel, timestamp: ts, name });
+      } catch (err: any) {
+        const code = err?.data?.error;
+        // No reaction to remove or unknown name: harmless.
+        if (code === "no_reaction" || code === "invalid_name") return;
         throw err;
       }
     },

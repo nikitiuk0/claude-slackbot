@@ -125,6 +125,23 @@ export class Orchestrator {
     await this.d.slack.postReply(channelId, threadTs, text);
   }
 
+  /**
+   * Remove the in-flight 🤔 reaction from the trigger message. Best-effort.
+   * Called at every terminal path so the trigger is left with only the
+   * final ✅/❌ (no leftover thinking face).
+   */
+  private async clearThinkingReaction(
+    channelId: string,
+    triggerMsgTs: string,
+    jlog: Logger
+  ): Promise<void> {
+    try {
+      await this.d.slack.removeReaction(channelId, triggerMsgTs, "thinking_face");
+    } catch (err) {
+      jlog.warn({ err, triggerMsgTs }, "failed to remove thinking_face reaction");
+    }
+  }
+
   async start(): Promise<void> {
     this.d.log.info("orchestrator starting");
     await this.d.state.load();
@@ -455,6 +472,7 @@ export class Orchestrator {
       const jlog = job.log ?? this.d.log;
       jlog.error({ err }, "executeJob crashed");
       try {
+        await this.clearThinkingReaction(job.mention.channelId, job.mention.triggerMsgTs, jlog);
         await this.replaceStatusWithFinalReply(
           job.mention.channelId,
           job.mention.threadTs,
@@ -569,6 +587,11 @@ export class Orchestrator {
       },
       "claude run finished"
     );
+
+    // Always clear the thinking face on the trigger — runs that finish
+    // here (and runs that were terminated externally) shouldn't leave a
+    // 🤔 hanging next to the final ✅/❌/🛑.
+    await this.clearThinkingReaction(channelId, triggerMsgTs, jlog);
 
     // If a command handler or watchdog already handled Slack + state updates,
     // skip the normal post-run pipeline to avoid clobbering their work.

@@ -30,6 +30,7 @@ function deps(over: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
       editMessage: vi.fn(async () => {}),
       deleteMessage: vi.fn(async () => {}),
       addReaction: vi.fn(async () => {}),
+      removeReaction: vi.fn(async () => {}),
       permalink: vi.fn(async () => "https://slack/permalink"),
     },
     state: {
@@ -102,6 +103,17 @@ describe("Orchestrator", () => {
     expect(replyCalls.length).toBe(2);
     expect(replyCalls[0][2]).toMatch(/Working on it/);
     expect(replyCalls[1][2]).toMatch(/Summary: ok/);
+  });
+
+  it("on completion, removes the thinking_face reaction from the trigger message", async () => {
+    const d = deps();
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m());
+    await o.idle();
+    expect(d.slack.removeReaction).toHaveBeenCalledWith("C1", "T1", "thinking_face");
+    // And the final reaction is still added.
+    expect(d.slack.addReaction).toHaveBeenCalledWith("C1", "T1", "white_check_mark");
   });
 
   it("queues a follow-up on the same thread (single-flight)", async () => {
@@ -260,6 +272,7 @@ describe("Orchestrator watchdog", () => {
         editMessage: vi.fn(async () => {}),
         deleteMessage: vi.fn(async () => {}),
         addReaction: vi.fn(async () => {}),
+        removeReaction: vi.fn(async () => {}),
         permalink: vi.fn(async () => "https://slack/perm/x"),
       },
     });
