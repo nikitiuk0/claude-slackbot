@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { parseStream, type ParseEvent } from "./claude/stream-parser.js";
 import { EditCoalescer, type SlackClientFacade } from "./slack/updater.js";
+import { toSlackMrkdwn } from "./slack/mrkdwn.js";
 import type { IncomingMention } from "./slack/adapter.js";
 import type { ThreadState } from "./state/store.js";
 import type { MilestonesStore, HistoryEntry } from "./state/milestones.js";
@@ -733,7 +734,7 @@ export class Orchestrator {
 
     if (result.exitCode === 0 && summary) {
       jlog.info("job done (with summary)");
-      await this.replaceStatusWithFinalReply(channelId, threadTs, status.ts, summary, jlog);
+      await this.replaceStatusWithFinalReply(channelId, threadTs, status.ts, toSlackMrkdwn(summary), jlog);
       await this.d.slack.addReaction(channelId, triggerMsgTs, "white_check_mark");
       await this.d.state.upsertThread(threadTs, {
         sessionId: finalSessionId,
