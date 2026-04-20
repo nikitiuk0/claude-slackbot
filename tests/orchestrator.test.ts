@@ -528,6 +528,50 @@ describe("Orchestrator commands", () => {
     expect(replyText).toContain("claude --resume");
   });
 
+  it("history and status squash multi-line milestones to single lines (defense in depth)", async () => {
+    const multilineCmd = "Running `psql -c \"\nSELECT col1,\n  col2\nFROM t\"`";
+    const d = deps({
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => ({
+          sessionId: "abc12345",
+          status: "done",
+          startedAt: "2026-04-19T20:00:00Z",
+          lastEventAt: "2026-04-19T20:00:30Z",
+        } as any)),
+        allRunning: vi.fn(() => []),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      },
+      milestones: {
+        append: vi.fn(async () => {}),
+        readAll: vi.fn(async () => []),
+        readLastRun: vi.fn(async () => [
+          { ts: "2026-04-19T20:00:00.000Z", kind: "start", sessionId: "abc12345", sessionMode: "new", instruction: "x" },
+          { ts: "2026-04-19T20:00:05.000Z", kind: "milestone", text: multilineCmd },
+        ]),
+        purgeThread: vi.fn(async () => {}),
+      } as any,
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m({ cleanText: "history" }));
+    await o.enqueue(m({ eventId: "E2", cleanText: "status" }));
+    o.stop();
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    const historyText = replyCalls.find((c: any[]) => c[2].includes("History"))[2];
+    const statusText = replyCalls.find((c: any[]) => c[2].includes("Recent milestones"))[2];
+    // Each milestone line should occupy one line, with " …" ellipsis marker.
+    const historyMilestoneLine = historyText.split("\n").find((l: string) => l.includes("20:00:05"));
+    expect(historyMilestoneLine).toBeDefined();
+    expect(historyMilestoneLine!.includes("SELECT")).toBe(false); // second line didn't leak in
+    expect(historyMilestoneLine).toMatch(/…$/);
+    const statusMilestoneLine = statusText.split("\n").find((l: string) => l.includes("20:00:05"));
+    expect(statusMilestoneLine).toBeDefined();
+    expect(statusMilestoneLine!.includes("SELECT")).toBe(false);
+    expect(statusMilestoneLine).toMatch(/…$/);
+  });
+
   it("history command renders the last run from MilestonesStore", async () => {
     const d = deps({
       milestones: {

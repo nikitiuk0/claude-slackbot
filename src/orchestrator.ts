@@ -438,7 +438,7 @@ export class Orchestrator {
       if (recentMilestones.length > 0) {
         lines.push("", "Recent milestones:");
         for (const m of recentMilestones) {
-          lines.push(`• ${m.ts.slice(11, 19)}  ${m.text}`);
+          lines.push(`• ${m.ts.slice(11, 19)}  ${toSingleLine(m.text, 200)}`);
         }
       }
       lines.push("", "Resume manually:", resumeSnippet);
@@ -815,10 +815,10 @@ export function formatHistory(entries: HistoryEntry[]): string {
     const time = e.ts.slice(11, 19); // HH:MM:SS from ISO
     if (e.kind === "start") {
       lines.push(
-        `${time} START session=${e.sessionId.slice(0, 8)} (${e.sessionMode})  «${truncate(e.instruction, 120)}»`
+        `${time} START session=${e.sessionId.slice(0, 8)} (${e.sessionMode})  «${toSingleLine(e.instruction, 120)}»`
       );
     } else if (e.kind === "milestone") {
-      lines.push(`${time}   ${e.text}`);
+      lines.push(`${time}   ${toSingleLine(e.text, 200)}`);
     } else if (e.kind === "end") {
       const tags = [e.status];
       if (e.exitCode !== null) tags.push(`exit=${e.exitCode}`);
@@ -843,6 +843,15 @@ export function formatHistory(entries: HistoryEntry[]): string {
   return ["History (most recent run):", "```", body, "```"].join("\n");
 }
 
-function truncate(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max - 1) + "…";
+/**
+ * Force a single-line rendering of arbitrary text for Slack: take the first
+ * non-empty line, cap at `max` chars, append " …" if anything was dropped.
+ * Idempotent — safe to apply to already-compact input.
+ */
+export function toSingleLine(text: string, max: number): string {
+  const hasNewline = text.includes("\n");
+  const first = text.split("\n").map((l) => l.trim()).find((l) => l.length > 0) ?? "";
+  const overlong = first.length > max;
+  const body = overlong ? first.slice(0, max) : first;
+  return hasNewline || overlong ? `${body} …` : body;
 }
