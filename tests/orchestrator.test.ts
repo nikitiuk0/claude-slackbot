@@ -177,6 +177,39 @@ describe("Orchestrator watchdog", () => {
     vi.useRealTimers();
   });
 
+  it("watchdog hard-stop posts auto-stop message and avoids double error", async () => {
+    vi.useFakeTimers();
+    let release: () => void = () => {};
+    const d = deps({
+      coalesceMs: 0,
+      stallSoftNoticeMs: 5 * 60_000,
+      stallHardStopMs: 24 * 60 * 60_000,
+      runClaude: vi.fn(async (input, onLine, control) => {
+        control.onStop(() => release());
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        await new Promise<void>((r) => (release = r));
+        return { exitCode: 130, signal: "SIGTERM" as NodeJS.Signals, stderr: "" };
+      }),
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    const p = o.enqueue(m());
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000 + 30_000);
+    await p;
+    o.stop();
+    vi.useRealTimers();
+    const editCalls = (d.slack.editMessage as any).mock.calls;
+    const autoStopMsg = editCalls.some((c: any[]) =>
+      typeof c[2] === "string" && c[2].includes("Auto-stopped after 24h")
+    );
+    expect(autoStopMsg).toBe(true);
+    // Should NOT have an "Errored.\n\n```" message from the error branch
+    const errored = editCalls.some((c: any[]) =>
+      typeof c[2] === "string" && c[2].startsWith("Errored.")
+    );
+    expect(errored).toBe(false);
+  });
+
   it("queue-pressure message lists stale running jobs with permalinks", async () => {
     vi.useFakeTimers();
     const releases: Array<() => void> = [];
@@ -249,8 +282,89 @@ describe("Orchestrator commands", () => {
     await o.idle();
     o.stop();
     const upserts = (d.state.upsertThread as any).mock.calls;
-    const stoppedCall = upserts.find((c: any) => c[1].status === "stopped");
-    expect(stoppedCall).toBeDefined();
+    // The FINAL upsert must be "stopped" — not clobbered by the errored branch.
+    const finalStatus = upserts[upserts.length - 1][1].status;
+    expect(finalStatus).toBe("stopped");
+    // The :x: reaction from the error branch must NOT have been added.
+    const reactionCalls = (d.slack.addReaction as any).mock.calls;
+    const addedX = reactionCalls.some((c: any[]) => c[2] === "x");
+    expect(addedX).toBe(false);
+  });
+
+  it("stop preserves status: stopped after the killed run unwinds", async () => {
+    let release: () => void = () => {};
+    const d = deps({
+      runClaude: vi.fn(async (input, onLine, control) => {
+        control.onStop(() => release());
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        await new Promise<void>((r) => (release = r));
+        return { exitCode: 130, signal: "SIGTERM" as NodeJS.Signals, stderr: "killed" };
+      }),
+      state: {
+        load: vi.fn(async () => {}),
+        getThread: vi.fn(() => ({
+          sessionId: "S", channelId: "C1", triggerMsgTs: "T1", statusMsgTs: "100.001",
+          status: "running", startedAt: "x", updatedAt: "x", lastEventAt: "x",
+        } as any)),
+        allRunning: vi.fn(() => []),
+        upsertThread: vi.fn(async () => {}),
+        deleteThread: vi.fn(async () => {}),
+      },
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    void o.enqueue(m({ cleanText: "fix it" }));
+    await new Promise((r) => setTimeout(r, 10));
+    await o.enqueue(m({ eventId: "E2", cleanText: "stop" }));
+    await o.idle();
+    o.stop();
+    const upserts = (d.state.upsertThread as any).mock.calls;
+    const finalStatus = upserts[upserts.length - 1][1].status;
+    expect(finalStatus).toBe("stopped");
+    // x reaction must NOT have been added
+    const reactionCalls = (d.slack.addReaction as any).mock.calls;
+    const addedX = reactionCalls.some((c: any[]) => c[2] === "x");
+    expect(addedX).toBe(false);
+  });
+
+  it("nudge doesn't leak parallel jobs", async () => {
+    // Track concurrent runClaude invocations
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const stdins: string[] = [];
+    const releases: Array<() => void> = [];
+    const d = deps({
+      runClaude: vi.fn(async (input, onLine, control) => {
+        stdins.push(input.stdin);
+        concurrent++;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        try {
+          if (stdins.length === 1) {
+            control.onStop(() => releases[0]?.());
+            await new Promise<void>((r) => releases.push(r));
+            return { exitCode: 130, signal: "SIGTERM" as NodeJS.Signals, stderr: "" };
+          }
+          onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+          onLine(JSON.stringify({
+            type: "assistant",
+            message: { content: [{ type: "text", text: "<slack-summary>\nSummary: ok\n</slack-summary>" }] },
+          }));
+          return { exitCode: 0, signal: null, stderr: "" };
+        } finally {
+          concurrent--;
+        }
+      }),
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    void o.enqueue(m({ cleanText: "fix it" }));
+    await new Promise((r) => setTimeout(r, 10));
+    await o.enqueue(m({ eventId: "E2", cleanText: "nudge" }));
+    await o.idle();
+    o.stop();
+    expect(maxConcurrent).toBe(1);
+    expect(stdins.length).toBe(2);
+    expect(stdins[1]).toMatch(/Reassess what's blocking/);
   });
 
   it("reset wipes the thread state", async () => {

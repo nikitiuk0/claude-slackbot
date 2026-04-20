@@ -78,6 +78,10 @@ type Job = {
   lastEventAt?: number;       // ms epoch
   lastMilestone?: string;
   softNoticed?: boolean;
+  /** Set when a command or watchdog terminated the run; executeJob skips post-run. */
+  terminatedBy?: "stop" | "nudge" | "reset" | "watchdog-hard-stop";
+  /** Set when watchdog hard-stop fires, to prevent duplicate firings. */
+  hardStopped?: boolean;
 };
 
 type ThreadSlot = {
@@ -139,7 +143,23 @@ export class Orchestrator {
             "\n\n\u26a0\ufe0f No progress in 5m. Reply 'stop' to abort or 'nudge' to wake it. Auto-stop after 24h."
         );
       }
-      if (idle >= this.d.stallHardStopMs && slot.stopController) {
+      if (idle >= this.d.stallHardStopMs && slot.stopController && !j.hardStopped) {
+        j.hardStopped = true;
+        j.terminatedBy = "watchdog-hard-stop";
+        void this.d.slack.editMessage(
+          j.mention.channelId,
+          j.statusMsgTs,
+          "Auto-stopped after 24h. Session preserved — re-mention to resume."
+        );
+        void this.d.slack.addReaction(j.mention.channelId, j.mention.triggerMsgTs, "x");
+        const s = this.d.state.getThread(j.mention.threadTs);
+        if (s) {
+          void this.d.state.upsertThread(j.mention.threadTs, {
+            ...s,
+            status: "errored",
+            updatedAt: new Date(this.d.nowMs()).toISOString(),
+          });
+        }
         slot.stopController.stop();
       }
     }
@@ -229,6 +249,7 @@ export class Orchestrator {
     }
 
     if (cmd === "stop") {
+      if (slot?.running) slot.running.terminatedBy = "stop";
       if (slot?.running && slot.stopController) slot.stopController.stop();
       await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "stop_button");
       const s = this.d.state.getThread(mention.threadTs);
@@ -244,6 +265,7 @@ export class Orchestrator {
     }
 
     if (cmd === "reset") {
+      if (slot?.running) slot.running.terminatedBy = "reset";
       if (slot?.running && slot.stopController) slot.stopController.stop();
       await this.d.state.deleteThread(mention.threadTs);
       await this.d.slack.addReaction(mention.channelId, mention.triggerMsgTs, "broom");
@@ -252,16 +274,36 @@ export class Orchestrator {
     }
 
     if (cmd === "nudge") {
-      if (slot?.running && slot.stopController) slot.stopController.stop();
-      // Wait briefly for the stop to take effect, then enqueue a synthetic mention.
-      await new Promise((r) => setTimeout(r, 10));
-      await this.runJob({
-        mention: {
+      if (slot?.running) {
+        // Mark the running job so executeJob skips its post-run pipeline.
+        slot.running.terminatedBy = "nudge";
+        // Enqueue the wake-up as a queued job so onJobDone picks it up after
+        // the current run unwinds — this avoids the race of a parallel spawn.
+        const nudgeMention: IncomingMention = {
           ...mention,
           cleanText:
             "You haven't made progress recently. Reassess what's blocking you and either ask a clarifying question or pick a different approach.",
-        },
-      });
+        };
+        // Replace any already-queued item (same semantics as a normal follow-up).
+        if (slot.queued) {
+          void this.d.slack.addReaction(
+            slot.queued.mention.channelId,
+            slot.queued.mention.triggerMsgTs,
+            "arrows_counterclockwise"
+          );
+        }
+        slot.queued = { mention: nudgeMention };
+        if (slot.stopController) slot.stopController.stop();
+      } else {
+        // No running job — just fire the nudge immediately as a new run.
+        await this.runJob({
+          mention: {
+            ...mention,
+            cleanText:
+              "You haven't made progress recently. Reassess what's blocking you and either ask a clarifying question or pick a different approach.",
+          },
+        });
+      }
     }
   }
 
@@ -381,7 +423,13 @@ export class Orchestrator {
     );
     lineStream.end();
     await parserDone;
-    await coalescer.flush();
+    await coalescer.flush().catch(() => {});
+
+    // If a command handler or watchdog already handled Slack + state updates,
+    // skip the normal post-run pipeline to avoid clobbering their work.
+    if (job.terminatedBy) {
+      return;
+    }
 
     const finalSessionId = observedSessionId ?? newSessionId;
     const ts = new Date(this.d.nowMs()).toISOString();
