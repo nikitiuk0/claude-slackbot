@@ -4,7 +4,7 @@ export type ParseEvent =
   | { kind: "session-init"; sessionId: string }
   | { kind: "milestone"; text: string }
   | { kind: "summary"; text: string }
-  | { kind: "result"; success: boolean };
+  | { kind: "result"; success: boolean; subtype: string; error?: string };
 
 const TextItem = z.object({
   type: z.literal("text"),
@@ -33,6 +33,9 @@ const AssistantLine = z.object({
 const ResultLine = z.object({
   type: z.literal("result"),
   subtype: z.string(),
+  error: z.string().optional(),
+  is_error: z.boolean().optional(),
+  result: z.string().optional(),
 });
 
 const SUMMARY_RE = /<slack-summary>([\s\S]*?)<\/slack-summary>/;
@@ -105,7 +108,11 @@ export async function* parseStream(
 
     const res = ResultLine.safeParse(json);
     if (res.success) {
-      yield { kind: "result", success: res.data.subtype === "success" };
+      const success =
+        res.data.subtype === "success" && res.data.is_error !== true;
+      const error =
+        res.data.error ?? (res.data.is_error ? res.data.result : undefined);
+      yield { kind: "result", success, subtype: res.data.subtype, error };
       continue;
     }
   }

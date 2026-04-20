@@ -40,7 +40,7 @@ export type RunClaudeFn = (
   input: { stdin: string; sessionMode: { kind: "new" | "resume"; sessionId: string } },
   onLine: (line: string) => void,
   control: { onStop: (cb: () => void) => void }
-) => Promise<{ exitCode: number | null; signal: NodeJS.Signals | null; stderr: string }>;
+) => Promise<{ exitCode: number | null; signal: NodeJS.Signals | null; stderr: string; stdoutTail?: string }>;
 
 export type FetchThreadFn = (
   channelId: string,
@@ -645,9 +645,13 @@ export class Orchestrator {
     let summary: string | null = null;
     let observedSessionId: string | null = null;
 
+    let parserError: string | undefined;
     const parserDone = (async () => {
       for await (const ev of parseStream(lineStream.iterate())) {
         if (ev.kind === "session-init") observedSessionId = ev.sessionId;
+        else if (ev.kind === "result" && !ev.success) {
+          parserError = ev.error ?? `result subtype=${ev.subtype}`;
+        }
         else if (ev.kind === "milestone") {
           milestones.push(ev.text);
           job.lastEventAt = this.d.nowMs();
@@ -765,16 +769,26 @@ export class Orchestrator {
         lastEventAt: ts,
       });
     } else {
+      const hasStderr = result.stderr.trim().length > 0;
+      const diagnosticSource = hasStderr ? result.stderr : (result.stdoutTail ?? "");
       jlog.error(
-        { exitCode: result.exitCode, signal: result.signal, stderrTail: result.stderr.split("\n").slice(-5).join("\n") },
+        {
+          exitCode: result.exitCode,
+          signal: result.signal,
+          parserError,
+          stderrTail: result.stderr.split("\n").slice(-5).join("\n"),
+          stdoutTailBytes: (result.stdoutTail ?? "").length,
+        },
         "job errored"
       );
-      const tail = result.stderr.split("\n").slice(-20).join("\n");
+      const tail = diagnosticSource.split("\n").slice(-20).join("\n");
+      const label = hasStderr ? "stderr" : "stdout (last 20 lines)";
+      const errorLine = parserError ? `Claude reported: ${parserError}\n\n` : "";
       await this.replaceStatusWithFinalReply(
         channelId,
         threadTs,
         status.ts,
-        `Errored.\n\n\`\`\`\n${tail}\n\`\`\``,
+        `Errored (exit ${result.exitCode}).\n\n${errorLine}${label}:\n\`\`\`\n${tail || "(empty)"}\n\`\`\``,
         jlog
       );
       await this.d.slack.addReaction(channelId, triggerMsgTs, "x");

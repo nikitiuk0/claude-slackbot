@@ -10,6 +10,10 @@ export type RunResult = {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
   stderr: string;
+  /** Tail of stdout for post-mortem diagnostics. `--output-format stream-json`
+   *  puts error results on stdout, so this is often the only evidence on a
+   *  non-zero exit with empty stderr. */
+  stdoutTail: string;
 };
 
 export type RunnerOptions = {
@@ -65,8 +69,17 @@ export class ClaudeRunner {
     const stderrChunks: Buffer[] = [];
     child.stderr.on("data", (c: Buffer) => stderrChunks.push(c));
 
+    // Keep a rolling tail of stdout lines (all events, including ones the
+    // parser ignored) so we can diagnose non-zero exits with empty stderr.
+    const stdoutTail: string[] = [];
+    const STDOUT_TAIL_LIMIT = 50;
+
     const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    rl.on("line", (line) => input.onLine(line));
+    rl.on("line", (line) => {
+      stdoutTail.push(line);
+      if (stdoutTail.length > STDOUT_TAIL_LIMIT) stdoutTail.shift();
+      input.onLine(line);
+    });
 
     if (input.stdin) {
       child.stdin.write(input.stdin);
@@ -77,16 +90,20 @@ export class ClaudeRunner {
       child.once("close", (code, signal) => {
         rl.close();
         const stderr = Buffer.concat(stderrChunks).toString("utf8");
+        const tail = stdoutTail.join("\n");
         this.opts.log?.info(
           {
             pid: child.pid,
             exitCode: code,
             signal,
             stderrBytes: stderr.length,
+            stdoutTailBytes: tail.length,
+            stdoutTailSample:
+              code !== 0 && stderr.length === 0 ? tail.slice(-1000) : undefined,
           },
           "claude subprocess exited"
         );
-        resolve({ exitCode: code, signal, stderr });
+        resolve({ exitCode: code, signal, stderr, stdoutTail: tail });
       });
     });
     this.child = null;

@@ -54,4 +54,18 @@ describe("parseStream", () => {
     const events = await collect(broken);
     expect(events.find((e) => e.kind === "summary")).toBeDefined();
   });
+
+  it("emits structured error info for non-success result lines", async () => {
+    const events = await collect(
+      [
+        '{"type":"system","subtype":"init","session_id":"s1"}',
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"tool xyz not found"}',
+      ].join("\n")
+    );
+    const result = events.find((e) => e.kind === "result");
+    expect(result).toBeDefined();
+    expect((result as any).success).toBe(false);
+    expect((result as any).subtype).toBe("error_during_execution");
+    expect((result as any).error).toBe("tool xyz not found");
+  });
 });
