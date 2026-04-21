@@ -8,11 +8,11 @@
 ## Goal
 
 Run a small central server that talks to one shared `@claude-bot` Slack app
-on behalf of multiple operators. Each operator pairs their laptop to the
+on behalf of multiple operators. Each operator pairs their machine to the
 server once; from then on, mentions in Slack get routed to the right
-operator's laptop, where Phase A's daemon executes them. The server is a
+operator's machine, where Phase A's daemon executes them. The server is a
 **transport relay**, not a brain — operators' state stays on operators'
-laptops.
+machines.
 
 Same value proposition as Phase A (Slack thread → Claude does the work →
 PRs land), now usable by every member of a workspace, with one Slack app
@@ -24,35 +24,39 @@ visible to everyone instead of N per-user apps.
 
 - A single shared Slack app per workspace; the server holds the bot token.
 - A central relay server that receives Slack events, routes them to the
-  paired laptop of the originating user, and posts back to Slack on
+  paired machine of the originating user, and posts back to Slack on
   behalf of the bot.
-- Pairing flow: user DMs `@claude-bot install`; bot returns a one-shot
-  pairing code and an `npx` install command; user runs it on their
-  laptop; the laptop is registered.
-- Server↔laptop transport: WebSocket over TLS, authenticated with
+- Pairing flow: any trigger from an unpaired user (channel `@mention` or
+  DM) prompts the bot to DM a one-shot pairing code + `npx` install
+  command. User runs it on their machine; the machine is registered.
+  Each Slack user has **at most one active machine at a time** —
+  re-pairing replaces the previous machine.
+- Server↔machine transport: WebSocket over TLS, authenticated with
   JWT/EdDSA per connection.
-- Postgres for durable identity (users, laptops, pairing codes). No Slack
+- Postgres for durable identity (users, machines, pairing codes). No Slack
   content stored at rest.
-- Laptops re-use Phase A's orchestrator unchanged. Only the
+- Machines re-use Phase A's orchestrator unchanged. Only the
   `SlackAdapter` and `SlackClientFacade` are swapped for remote
   equivalents; everything else (state store, milestones, attachments,
   watchdog, commands) keeps working.
-- Discovery indirection at `https://claude-slackbot.tumblr.net/discover`
-  so the operator can move the backend (GCP → on-prem) without DNS
-  surgery.
+- Discovery indirection — a `/discover` endpoint hosted on the same
+  server — so the operator can move the backend without DNS surgery.
+  The server URL defaults to the Cloud Run auto-generated hostname
+  (e.g. `https://claude-slackbot-xyz-uc.a.run.app`); a custom domain
+  can be attached later without touching the design.
 - Live in-band migration signal that moves connected clients to a new
   backend within seconds.
 - Client auto-update via npm: the npm-published package self-replaces in
   place when the server announces a new version.
-- Multi-workspace support per laptop via local profiles
+- Multi-workspace support per machine via local profiles
   (`~/.claude-slackbot/profiles/<name>/`).
 - Server runs on GCP (single instance Cloud Run Job or VM) with a clear
   on-prem migration playbook.
 
 ### Out of scope (Phase B)
 
-- **Offline-laptop queuing.** Slack events for offline laptops get a
-  "your laptop isn't online" reply; nothing is queued. Considered and
+- **Offline-machine queuing.** Slack events for offline machines get a
+  "your machine isn't online" reply; nothing is queued. Considered and
   scoped out as future work.
 - Web admin UI / dashboard (post-MVP).
 - Per-mention permission relay back to Slack (was A3 in Phase A; same
@@ -73,9 +77,9 @@ visible to everyone instead of N per-user apps.
 
 - Storing Slack thread content / message bodies / Claude outputs on
   the server, in any DB or log, ever. Memory-only transit.
-- Server doing any work *for* a laptop other than passing messages
+- Server doing any work *for* a machine other than passing messages
   through (e.g. server doesn't run Claude itself).
-- Routing one user's mentions to another user's laptop.
+- Routing one user's mentions to another user's machine.
 
 ## Threat model and security posture
 
@@ -83,19 +87,27 @@ What we're protecting against:
 
 | Threat | Mitigation |
 |---|---|
-| On-path / network attacker reads Slack events or Claude outputs in transit | TLS 1.3 on every hop (server↔Slack, server↔laptop, laptop↔git, laptop↔Anthropic API). |
-| Server-side data breach exposes historical Slack content | Server stores no Slack content. State files (sessions, milestones, attachments) live on laptops; server's Postgres holds only identity rows. |
-| Compromised server impersonates a laptop or re-routes a different laptop | Each laptop authenticates with a JWT signed by its private Ed25519 key; server can't forge it. Routing always uses the paired `(workspace, user_id) → laptop` lookup; server code reviews the routing query shape. |
-| Compromised discovery endpoint redirects clients to a hostile backend | Client pins the server's Ed25519 public key at pair time. Hostile backend can't authenticate to the client (no private key); client refuses connection. |
-| Stolen pairing code lets attacker pair their own laptop to my Slack identity | Code is one-shot, ~15-min TTL, bound to the Slack user that requested it. The legitimate Slack user gets a "Paired: this laptop" DM they didn't initiate, providing immediate visible alarm and a one-tap unpair flow. |
-| Stolen client private key (laptop theft) | Operator runs `@claude-bot unpair` from Slack; server marks `status='revoked'`; further connections from that key are refused. |
+| On-path / network attacker reads Slack events or Claude outputs in transit | TLS 1.3 on every hop (server↔Slack, server↔machine, machine↔git). The `claude` CLI on the machine is what talks to the Anthropic API — the server never does. |
+| Server-side data breach exposes historical Slack content | Server stores no Slack content. State files (sessions, milestones, attachments) live on machines; server's Postgres holds only identity rows. |
+| Stolen pairing code lets attacker pair their own machine to my Slack identity | Code is one-shot, ~15-min TTL, bound to the Slack user that requested it. The legitimate Slack user gets a "Paired: this machine" DM they didn't initiate, providing immediate visible alarm and a one-tap unpair flow. Every new pair auto-revokes the user's previous machines, so a stolen code can't sit unnoticed behind a legitimate active machine. |
+| Stolen client private key (machine theft) | Operator runs `@claude-bot unpair` from Slack; server marks `status='revoked'`; further connections from that key are refused. |
 | npm publish account compromise pushes hostile update | Auto-update validates the published-by account against a hardcoded allowlist. (Defense is not perfect — see "Open security questions" below.) |
 
 What we're explicitly NOT protecting against:
 
+- **A compromised server.** If the server process is compromised, the
+  attacker can modify routing code, read Slack events in memory as
+  they arrive, craft arbitrary `slack_event` messages to any paired
+  machine (including instructions that look like they came from a
+  real Slack mention), and post anything they want to Slack as the
+  bot. The pairing JWT auth prevents an attacker without the server
+  from impersonating a machine, but it does not help against a
+  malicious server itself. Operator controls (audit logging of
+  server-side actions, minimal deploy access, cloud-provider IAM)
+  are the real defense here.
 - A determined Slack workspace admin reading messages: they already can.
   We don't add a second policy layer on top of Slack's own.
-- A compromised laptop running Claude doing harm in the operator's
+- A compromised machine running Claude doing harm in the operator's
   configured workdir: blast radius is bounded by `--dangerously-skip-permissions`
   + the workdir + draft PR mode, same as Phase A.
 - A determined user installing the agent in a sandbox to bypass their
@@ -104,45 +116,66 @@ What we're explicitly NOT protecting against:
 ## Architecture
 
 ```
-                                                  ┌─────────────────────┐
-   ┌───────────┐    Bolt / Socket Mode            │ Slack workspace     │
-   │ Anthropic │◀── HTTPS ──┐                     │   (Tumblr Slack)    │
-   │   API     │            │                     │                     │
-   └───────────┘            │                     │   @claude-bot       │
-        ▲                   │                     └──────────┬──────────┘
-        │                   │                                │
-        │ HTTPS             │             Bolt Socket Mode   │
-        │ (Claude SDK)      │                  (server-side) │
-        │                   ▼                                ▼
-   ┌─────────────────────────────────────────────────────────────────────┐
-   │ Laptop daemon (Phase A core)                                         │
-   │  ┌────────────────────────┐    ┌──────────────────────────────────┐ │
-   │  │ ServerAdapter           │◀──▶│ Relay Server (Cloud Run Job /    │ │
-   │  │ (WebSocket → server)    │    │  on-prem container)              │ │
-   │  └────┬───────────────────┘    │                                  │ │
-   │       │                         │  ┌──────────────────────────┐  │ │
-   │  ┌────▼───────────────────┐    │  │ Slack adapter (Bolt)     │  │ │
-   │  │ Orchestrator (UNCHANGED)│    │  │ Routing (DB + sockets)   │  │ │
-   │  │ + StateStore + Milestones│    │  │ Pairing API              │  │ │
-   │  │ + AttachmentsStore       │    │  │ Discovery endpoint        │  │ │
-   │  │ + Watchdog + Commands    │    │  │ Auto-update announce      │  │ │
-   │  └────┬───────────────────┘    │  │ WebSocket server          │  │ │
-   │       │                         │  └──────────────────────────┘  │ │
-   │  ┌────▼───────────────────┐    │  ┌──────────────────────────┐  │ │
-   │  │ ClaudeRunner            │    │  │ Postgres (identity only) │  │ │
-   │  └────┬───────────────────┘    │  └──────────────────────────┘  │ │
-   │       ▼                         └──────────────────────────────────┘ │
-   │  ┌─────────────┐                                                    │
-   │  │ claude CLI  │── git push ──▶ GitHub Enterprise (PRs)            │
-   │  └─────────────┘                                                    │
-   │                                                                      │
-   │ Profile dir per workspace at ~/.claude-slackbot/profiles/<name>/    │
-   └─────────────────────────────────────────────────────────────────────┘
+                                        ┌─────────────────────┐
+                                        │ Slack workspace     │
+                                        │   (e.g. Tumblr)     │
+                                        │                     │
+                                        │   @claude-bot       │
+                                        └──────────┬──────────┘
+                                                   │
+                              Bolt Socket Mode     │
+                              (server-side)        │
+                                                   ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Relay server (Cloud Run Job / on-prem container)                │
+│  ┌──────────────────────────────┐                                │
+│  │ Slack adapter (Bolt)         │                                │
+│  │ Routing (DB + sockets)       │                                │
+│  │ Pairing API                  │                                │
+│  │ Discovery endpoint /discover │                                │
+│  │ Auto-update announce         │                                │
+│  │ WebSocket server             │                                │
+│  └──────────────────────────────┘                                │
+│  ┌──────────────────────────────┐                                │
+│  │ Postgres (identity only)     │                                │
+│  └──────────────────────────────┘                                │
+└─────────────────────────────────────────────────────────────────┘
+          ▲
+          │ WebSocket over TLS (one per paired machine / profile)
+          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Machine daemon (Phase A core + thin transport layer)            │
+│  ┌────────────────────────┐                                      │
+│  │ ServerAdapter + JWT    │                                      │
+│  │ RemoteSlackFacade       │                                      │
+│  └───────────┬────────────┘                                      │
+│              ▼                                                    │
+│  ┌────────────────────────────────────────┐                      │
+│  │ Orchestrator (UNCHANGED from Phase A)  │                      │
+│  │ + StateStore + Milestones              │                      │
+│  │ + AttachmentsStore                     │                      │
+│  │ + Watchdog + Commands                  │                      │
+│  └───────────┬────────────────────────────┘                      │
+│              ▼                                                    │
+│  ┌────────────────────────┐                                      │
+│  │ ClaudeRunner            │                                      │
+│  │      │ spawns           │                                      │
+│  │      ▼                  │                                      │
+│  │ ┌──────────────┐        │─── git push ──▶ GitHub (PRs)        │
+│  │ │ claude CLI   │──────────── HTTPS ──────▶ Anthropic API      │
+│  │ └──────────────┘        │                                      │
+│  └────────────────────────┘                                      │
+│                                                                    │
+│ Profile dir per workspace at ~/.claude-slackbot/profiles/<name>/  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
+Only the `claude` CLI on the machine talks to the Anthropic API — the
+relay server never does.
+
 **Two processes**: `relay-server` (one running anywhere — GCP/on-prem) and
-`laptop-agent` (one per operator, running on their laptop). Slack app
-talks only to the server; Anthropic API talks only to laptops; nothing
+`machine-agent` (one per operator, running on their machine). Slack app
+talks only to the server; Anthropic API talks only to machines; nothing
 about Slack content or Claude output transits the server's disk.
 
 ## Component responsibilities
@@ -154,22 +187,24 @@ Owns Bolt + Socket Mode. Receives `app_mention` events. Hands them to
 the router.
 
 **Router.**
-For an incoming Slack event, looks up `(workspace_id, user_id)` →
-candidate laptops in Postgres → intersects with currently-connected
-laptops → picks one (most-recently-connected) → forwards the event
-through the connection.
+For an incoming Slack event, looks up `(workspace_id, user_id)` → the
+user's single active machine in Postgres → checks it's currently
+connected → forwards the event through that connection. If the user
+has no active machine, triggers the install DM flow. If the machine
+exists but isn't connected, replies in-thread with a reconnect
+prompt.
 
 **Pairing service.**
-Issues short-TTL pairing codes via DM, validates them when a laptop
-calls `pair`, writes the laptop row.
+Issues short-TTL pairing codes via DM, validates them when a machine
+calls `pair`, writes the machine row.
 
 **WebSocket gateway.**
-Accepts authenticated WebSocket connections from laptops. Owns the
+Accepts authenticated WebSocket connections from machines. Owns the
 in-memory `connections` map and dispatches inbound messages to the
 right handler (Slack RPC, heartbeat, ack).
 
 **Slack RPC handler.**
-Receives `slack_rpc_request` messages from laptops, executes the named
+Receives `slack_rpc_request` messages from machines, executes the named
 Slack API call (`postReply`, `editMessage`, `addReaction`,
 `removeReaction`, `deleteMessage`, `permalink`, `users.info`,
 `conversations.replies`, `files.download`), returns the result via
@@ -188,7 +223,7 @@ to all connected clients.
 Operator-triggered command (e.g. CLI on the server) that sends
 `{ type: "migrate", new_url }` to all connections.
 
-### Laptop side
+### Machine side
 
 **ServerConnection.**
 Manages the WebSocket: connect, reconnect with backoff, JWT minting,
@@ -233,12 +268,12 @@ CREATE TABLE users (
   PRIMARY KEY (slack_workspace_id, slack_user_id)
 );
 
-CREATE TABLE laptops (
-  laptop_id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+CREATE TABLE machines (
+  machine_id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   slack_workspace_id   TEXT        NOT NULL,
   slack_user_id        TEXT        NOT NULL,
   public_key           BYTEA       NOT NULL,           -- 32 bytes Ed25519 pubkey
-  label                TEXT,                            -- "work laptop"
+  label                TEXT,                            -- hostname, cosmetic
   status               TEXT        NOT NULL,            -- 'active' | 'revoked'
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_seen_at         TIMESTAMPTZ,
@@ -246,8 +281,10 @@ CREATE TABLE laptops (
   FOREIGN KEY (slack_workspace_id, slack_user_id)
     REFERENCES users(slack_workspace_id, slack_user_id)
 );
-CREATE INDEX laptops_active_by_user
-  ON laptops (slack_workspace_id, slack_user_id)
+-- Enforces the invariant: at most one active machine per Slack user.
+-- New pairings revoke existing active rows before inserting.
+CREATE UNIQUE INDEX machines_one_active_per_user
+  ON machines (slack_workspace_id, slack_user_id)
   WHERE status = 'active';
 
 CREATE TABLE pairings (
@@ -256,7 +293,7 @@ CREATE TABLE pairings (
   slack_user_id        TEXT        NOT NULL,
   expires_at           TIMESTAMPTZ NOT NULL,            -- now() + 15min
   consumed_at          TIMESTAMPTZ,                     -- null until claimed
-  laptop_id            UUID                              -- set when consumed
+  machine_id            UUID                              -- set when consumed
 );
 CREATE INDEX pairings_pending
   ON pairings (slack_workspace_id, slack_user_id)
@@ -265,14 +302,14 @@ CREATE INDEX pairings_pending
 
 **That is the entire server-side data model.** No Slack messages, no
 session IDs, no milestone history, no attachments — those all live on
-laptops. The server is a directory + transport.
+machines. The server is a directory + transport.
 
 ### Server: in-memory state
 
 Rebuilt on restart in seconds; nothing here is durable.
 
 ```ts
-// Active connections, keyed by laptop_id
+// Active connections, keyed by machine_id
 activeConnections: Map<UUID, {
   socket: WebSocket;
   connectedAt: number;
@@ -282,7 +319,7 @@ activeConnections: Map<UUID, {
 }>
 
 // Reverse index for routing
-userLiveLaptops: Map<`${workspaceId}:${userId}`, Set<UUID>>
+userLiveMachines: Map<`${workspaceId}:${userId}`, Set<UUID>>
 
 // Replay-prevention LRU for JWT jti claims
 seenJtis: LRU<jti, expiry_ms>            // 5-min TTL, cap 4096
@@ -294,7 +331,7 @@ seenSlackEventIds: LRU<event_id, ts>     // 5-min TTL, cap 1024
 pendingRpcs: Map<rpc_id, { resolve, reject, timeout }>
 ```
 
-### Laptop: filesystem under `~/.claude-slackbot/`
+### Machine: filesystem under `~/.claude-slackbot/`
 
 ```
 ~/.claude-slackbot/
@@ -316,7 +353,7 @@ pendingRpcs: Map<rpc_id, { resolve, reject, timeout }>
 
 ```json
 {
-  "serverUrl": "https://claude-slackbot.tumblr.net",
+  "serverUrl": "https://claude-slackbot-xyz-uc.a.run.app",
   "workdir": "/Users/me/work/flavortown",
   "claudeBinary": "claude",
   "maxParallelJobs": 3,
@@ -332,55 +369,84 @@ Notably **gone** from Phase A's config: `slackBotToken`, `slackAppToken`,
 
 ## Pairing flow (P1)
 
+### What triggers install
+
+Any one of these, from a user with **no active machine paired**:
+- An `@claude-bot` mention in any channel the bot is in.
+- A DM to the bot — with any text, including an empty ping or the word
+  `install`.
+
+All three paths produce the same response: a friendly in-thread ack
+(for the channel mention, so the thread sees the bot responded) plus a
+DM with install instructions.
+
 ### Sequence
 
-1. **User DMs the bot** in Slack: `@claude-bot install`. (Or: any DM
-   from a user with no active laptop triggers the install flow
-   automatically.)
-2. **Server**: detects the DM is from a user with no `active` laptops →
-   issues a fresh row in `pairings` with a 15-min TTL → DMs back:
+1. **Trigger**: user mentions `@claude-bot fix this bug` in a thread OR
+   DMs the bot.
+2. **Server** detects the requesting Slack user has no active machine.
+   - For a channel mention: post a short, one-time in-thread reply:
+     *"👋 You'll need to configure me on your machine first. Check your
+     DMs for install instructions."* React 🛠️ on the trigger.
+   - Issue a fresh `pairings` row with a 15-min TTL.
+   - DM the user:
 
-   > Welcome! To pair this Slack account with your laptop, run on the laptop you want to use:
-   >
-   > ```
-   > npx -y @nikitiuk0/claude-slackbot pair \
-   >   --server https://claude-slackbot.tumblr.net \
-   >   --code PAIR-7a3f-9k2e
-   > ```
-   >
-   > Code expires in 15 minutes.
+     > Welcome! To pair this Slack account with your machine, run on the machine you want to use:
+     >
+     > ```
+     > npx -y @nikitiuk0/claude-slackbot pair \
+     >   --server https://claude-slackbot-xyz-uc.a.run.app \
+     >   --code PAIR-7a3f-9k2e
+     > ```
+     >
+     > Code expires in 15 minutes.
+     > Full install guide + troubleshooting: <https://github.com/nikitiuk0/claude-slackbot#readme>
 
-3. **User runs** the command on their laptop.
-4. **Laptop agent** (`pair` subcommand):
+   - If the trigger was a channel mention, the original mention is
+     NOT queued or re-processed after pairing — the user re-mentions
+     the bot once install is complete.
+
+3. **User runs** the command on their machine.
+4. **Machine agent** (`pair` subcommand):
    a. Generates an Ed25519 keypair, writes
       `~/.claude-slackbot/profiles/default/identity/keypair.json` with
       perms `0600`.
    b. Connects to `<server>/pair` over HTTPS:
-      `POST /pair { "code": "PAIR-…", "public_key": "<base64>", "label": "<hostname>" }`
+      `POST /pair { "code": "PAIR-…", "machine_public_key": "<base64>", "label": "<hostname>" }`
    c. Server validates the code is unused + not expired + matches the
-      DMing user → inserts row in `laptops` → marks
-      `pairings.consumed_at` and `laptops.laptop_id` → returns
-      `{ "laptop_id": "uuid", "server_public_key": "<base64>", "ws_url": "wss://.../ws" }`.
-   d. Laptop writes `pinned-server-key.pub` and `config.json` (with
+      DMing user, then in a single DB transaction:
+      - Revokes all existing `active` machines for this
+        `(workspace, user_id)` — sets `status='revoked'` and
+        `revoked_at = now()`.
+      - Inserts the new `machines` row with `status='active'`.
+      - Marks `pairings.consumed_at` and `pairings.machine_id`.
+      - Returns
+        `{ "machine_id": "uuid", "server_public_key": "<base64>", "ws_url": "wss://.../ws", "revoked_previous": <count> }`.
+   d. Machine writes `pinned-server-key.pub` and `config.json` (with
       `serverUrl`).
-   e. Laptop installs an OS auto-start hook (launchd plist on macOS;
+   e. Machine installs an OS auto-start hook (launchd plist on macOS;
       systemd `--user` unit on Linux). Starts the daemon immediately.
-5. **Server DMs the user**: `✅ Paired this laptop ("MacBook-Pro-6"). Mention me in any thread to start.`
+5. **Server DMs the user**:
+   `✅ Paired this machine ("MacBook-Pro-6"). Mention me in any thread to start.`
+   If `revoked_previous > 0`: adds
+   *"Your previously paired machine(s) have been revoked — each Slack
+   user has one paired machine at a time."*
 6. **First connection**: daemon mints a JWT, opens WebSocket to
    `wss://.../ws` with `Authorization: Bearer <jwt>`, server accepts,
    inserts into `activeConnections`. Ready.
 
-### Subsequent re-pairing (already-paired user)
+### Re-pairing (already-paired user)
 
-`@claude-bot install` from a user with active laptops returns the same
-install command but with a fresh code. After completion, the new laptop
-is added; old laptops remain unless the user runs `@claude-bot unpair`.
+Same flow. The `install` trigger works regardless of whether the user
+has an existing machine; the revoke-on-pair step in (4c) ensures the
+new machine cleanly replaces any old one. This is also the recovery
+path for a lost / stolen machine — just pair a new one.
 
-## Server↔laptop transport
+## Server↔machine transport
 
 ### Connection
 
-`wss://<server>/ws` — long-lived WebSocket, one per profile per laptop.
+`wss://<server>/ws` — long-lived WebSocket, one per profile per machine.
 
 ### Auth (handshake — JWT/EdDSA, RFC 7519 + RFC 8037)
 
@@ -389,9 +455,9 @@ is added; old laptops remain unless the user runs `@claude-bot unpair`.
 ```
 Authorization: Bearer <jwt>
 
-JWT payload: { "sub": "<laptop_id>", "iat": <now>, "exp": <now+5m>, "jti": "<random>" }
+JWT payload: { "sub": "<machine_id>", "iat": <now>, "exp": <now+5m>, "jti": "<random>" }
 JWT header:  { "alg": "EdDSA", "typ": "JWT" }
-Signed with the laptop's Ed25519 private key.
+Signed with the machine's Ed25519 private key.
 ```
 
 Server peeks at `sub`, fetches `public_key` from Postgres, runs
@@ -457,12 +523,12 @@ field for request/response correlation.
   "current": "0.3.0" }                          // sent on connect
 ```
 
-### Reconnect strategy (laptop)
+### Reconnect strategy (machine)
 
 - Backoff: exponential, 1s → 2s → 4s → 8s → … capped at 60s.
 - Reset to 1s after a successful connection.
-- On disconnect with code `4403` (auth fail) or `4404` (unknown laptop),
-  do NOT retry; log + exit with "this laptop has been unpaired or
+- On disconnect with code `4403` (auth fail) or `4404` (unknown machine),
+  do NOT retry; log + exit with "this machine has been unpaired or
   revoked; re-pair to continue."
 
 ### Slack RPC inventory
@@ -479,23 +545,31 @@ This is the entire surface area:
 | `removeReaction` | channel, ts, name | `{}` |
 | `permalink` | channel, ts | `{ url }` |
 | `getThread` | channel, thread_ts, time_zone | `{ raw, rendered }` (server does the same `conversations.replies` + `users.info` work the Phase A `fetchThread` does) |
-| `downloadFile` | file_id | `{ data: <base64> }` (server fetches from Slack with bot token, returns binary inline; laptop writes to `data/attachments/`) |
+| `downloadFile` | file_id | `{ data: <base64> }` (server fetches from Slack with bot token, returns binary inline; machine writes to `data/attachments/`) |
 
 Server-side method catalogue is fully closed; unknown methods return an
 error. No reflection or dynamic dispatch.
 
 ## Discovery indirection
 
-`GET https://claude-slackbot.tumblr.net/discover` → plain HTTPS:
+`/discover` is a plain HTTPS endpoint on the same relay server:
 
-```json
-{ "primary": "https://claude-slackbot.tumblr.net/ws" }
+```
+GET https://<server-host>/discover
 ```
 
-`Cache-Control: no-cache` to defeat ISP caching of the body. The
-discovery response is **not signed** — server identity is established at
-WebSocket handshake against the laptop's pinned server key, which is the
-real protection against discovery-redirect attacks.
+```json
+{ "primary": "https://<server-host>/ws" }
+```
+
+- `Cache-Control: no-cache` to defeat ISP caching of the response body.
+- **Not signed.** Server identity is established at WebSocket handshake
+  against the machine's pinned server key; a MITM that redirected the
+  discovery response couldn't authenticate as the real server anyway.
+- Living on the same process as the WebSocket server keeps the deploy
+  story single-binary. In the migration playbook below, the old backend
+  keeps serving `/discover` (pointing at the new backend's WS URL) until
+  every machine has moved.
 
 ### Client URL resolution order
 
@@ -507,8 +581,10 @@ real protection against discovery-redirect attacks.
                                  self-heal stale config
 ```
 
-DNS for `claude-slackbot.tumblr.net` never needs to change during
-backend migration; the body of `/discover` does.
+The `serverUrl` a machine was paired with is the URL it hits for
+discovery. During a backend migration the old URL must remain reachable
+(at least for `/discover`) long enough to redirect its machines to the
+new one — see the migration playbook.
 
 ## Auto-update (U1: npm)
 
@@ -549,7 +625,7 @@ backend migration; the body of `/discover` does.
 
 ## Multi-workspace via profiles
 
-A single laptop can pair against multiple servers (e.g. Tumblr internal
+A single machine can pair against multiple servers (e.g. Tumblr internal
 + a personal sandbox). Each server gets its own profile.
 
 ### Profile lifecycle
@@ -558,7 +634,7 @@ A single laptop can pair against multiple servers (e.g. Tumblr internal
 # First profile: pair (becomes default automatically)
 npx -y @nikitiuk0/claude-slackbot pair \
   --profile tumblr \
-  --server https://claude-slackbot.tumblr.net \
+  --server https://claude-slackbot-xyz-uc.a.run.app \
   --code PAIR-…
 
 # Second profile: pair against a different server
@@ -591,7 +667,7 @@ the others; daemon restarts the failed worker.
 ### What server doesn't know
 
 The server has no concept of profiles. From its side, each profile is
-just "a laptop." The fact that two paired-laptop entries actually map to
+just "a machine." The fact that two paired-machine entries actually map to
 the same physical machine on the operator's desk is invisible (and
 uninteresting) to the server.
 
@@ -600,27 +676,28 @@ uninteresting) to the server.
 For an incoming Slack `app_mention`:
 
 1. Server-side dedupe by `event_id` (in-memory LRU, 5-min TTL).
-2. Look up `(workspace_id, user_id)` in `laptops WHERE status='active'`.
-   - 0 rows → reply in thread: *"You don't have a paired laptop. DM me
-     `install` to set one up."* React 🚫.
-   - ≥1 row → continue.
-3. Intersect with `userLiveLaptops[workspace:user_id]` (currently
-   connected).
-   - 0 connected → reply: *"Your laptop isn't online. Reconnect and
-     re-mention me to retry."* React 🚫.
-   - ≥1 connected → continue.
-4. Pick: most-recently-connected of the user's online laptops.
-   (User-explicit "default" flag is post-MVP if needed.)
-5. Send `slack_event` via that laptop's WebSocket. Done.
+2. Look up the user's active machine in Postgres (at most one row per
+   `(workspace_id, user_id)` because pairing revokes prior machines).
+   - 0 rows → trigger the **install flow**: post a short in-thread reply
+     *"👋 You'll need to configure me on your machine first. Check
+     your DMs for install instructions."* (🛠️ reaction), then issue a
+     pairing code and DM the user the install command. The original
+     mention isn't queued — user re-mentions after pairing.
+   - 1 row → continue.
+3. Check `userLiveMachines[workspace:user_id]` (currently connected).
+   - Not connected → reply: *"Your machine isn't online. Reconnect and
+     re-mention me to retry."* React 🚫. Nothing queued.
+   - Connected → continue.
+4. Send `slack_event` via that machine's WebSocket. Done.
 
-The laptop applies all of Phase A's behaviour from here: identity gate
+The machine applies all of Phase A's behaviour from here: identity gate
 becomes a no-op (server already gated by `(workspace, user_id)`), then
 orchestrator does its single-flight, queue, watchdog, etc.
 
 ### What the server explicitly does NOT do
 
-- Track which threads the laptop is currently working on.
-- Re-route in-flight work to a different laptop.
+- Track which threads the machine is currently working on.
+- Re-route in-flight work to a different machine.
 - Persist or reorder events.
 - Touch any other Phase A internals.
 
@@ -628,31 +705,31 @@ orchestrator does its single-flight, queue, watchdog, etc.
 
 | Failure | Detection | Server response |
 |---|---|---|
-| Laptop disconnects mid-RPC | WS close while `pendingRpcs` non-empty | Mark RPC failed; the laptop will retry on its next connect (orchestrator's executeJob will see runClaude exit and surface the error) |
-| Slack API call fails inside an RPC | `WebClient` exception | Return `slack_rpc_response` with `error` field; laptop's `RemoteSlackFacade` rejects the promise; orchestrator handles like any other Slack API error |
-| Server restart while laptops connected | Process exit | All WSes drop; laptops reconnect with backoff; in-memory state rebuilds in seconds; no durable state lost |
+| Machine disconnects mid-RPC | WS close while `pendingRpcs` non-empty | Mark RPC failed; the machine will retry on its next connect (orchestrator's executeJob will see runClaude exit and surface the error) |
+| Slack API call fails inside an RPC | `WebClient` exception | Return `slack_rpc_response` with `error` field; machine's `RemoteSlackFacade` rejects the promise; orchestrator handles like any other Slack API error |
+| Server restart while machines connected | Process exit | All WSes drop; machines reconnect with backoff; in-memory state rebuilds in seconds; no durable state lost |
 | Slack delivers duplicate event | Same `event_id` | Dropped at server-side LRU before routing |
-| JWT expired during long disconnect | `jwtVerify` throws | Laptop mints a fresh one on reconnect; transparent |
-| Laptop's server pubkey doesn't match | Client check after `server_hello` | Disconnect, log, surface to user via console output (and on macOS, a Notification Center alert if technically feasible — nice-to-have) |
-| Pairing code expired | `pairings.expires_at < now()` | `POST /pair` returns 410 Gone; laptop CLI prints "Code expired; DM the bot for a new one." |
+| JWT expired during long disconnect | `jwtVerify` throws | Machine mints a fresh one on reconnect; transparent |
+| Machine's server pubkey doesn't match | Client check after `server_hello` | Disconnect, log, surface to user via console output (and on macOS, a Notification Center alert if technically feasible — nice-to-have) |
+| Pairing code expired | `pairings.expires_at < now()` | `POST /pair` returns 410 Gone; machine CLI prints "Code expired; DM the bot for a new one." |
 | Pairing code already consumed | `pairings.consumed_at IS NOT NULL` | `POST /pair` returns 409 Conflict; same message |
 | Auto-update fails (npm down, integrity check fails) | `npm install` non-zero | Log, surface via Slack DM to operator, retry on next announce |
 | Server's Postgres unreachable | Connection error | `503` on Slack events ack to Bolt → Bolt retries; server keeps trying to reconnect to DB; if down >5min, surface to operator alarm |
-| Slack `files.download` fails (token lacks `files:read`, etc.) | API error | RPC returns `error`; laptop renders the file as "[unavailable]" in thread context (same fallback as Phase A) |
+| Slack `files.download` fails (token lacks `files:read`, etc.) | API error | RPC returns `error`; machine renders the file as "[unavailable]" in thread context (same fallback as Phase A) |
 
 ## Tech stack
 
-- **Runtime:** Node.js ≥20 (server and laptop).
+- **Runtime:** Node.js ≥20 (server and machine).
 - **Language:** TypeScript (strict).
 - **Server framework:** Fastify (small, fast, good WS support; plain HTTP for `/discover` and `/pair`). Bolt for Slack.
-- **WebSocket:** `@fastify/websocket` server-side; native `ws` package on the laptop.
+- **WebSocket:** `@fastify/websocket` server-side; native `ws` package on the machine.
 - **JWT:** `jose` (Node-native crypto, EdDSA support, no deps).
 - **Postgres client:** `pg` (boring, well-known); `drizzle-orm` for typed queries (optional but nice).
 - **Migrations:** `drizzle-kit` or plain `node-pg-migrate`.
 - **Container:** Distroless Node image (`gcr.io/distroless/nodejs20-debian12`).
-- **Process manager on laptop:** macOS `launchd`, Linux `systemd --user`.
+- **Process manager on machine:** macOS `launchd`, Linux `systemd --user`.
   Plist/unit installed automatically by the `pair` command.
-- **Logging:** `pino` everywhere (server has its own log file; each laptop
+- **Logging:** `pino` everywhere (server has its own log file; each machine
   profile has its own).
 - **Tests:** `vitest`. Integration tests for server use `pg-mem` or
   Testcontainers Postgres.
@@ -660,7 +737,7 @@ orchestrator does its single-flight, queue, watchdog, etc.
 ## Project layout
 
 The Phase A code stays in this same repo. We add a `server/` directory
-for the relay server and reorganise the laptop side under `client/`.
+for the relay server and reorganise the machine side under `client/`.
 
 ```
 slackbot/
@@ -716,7 +793,7 @@ slackbot/
 │   │   │   ├── schema.ts                # drizzle schema
 │   │   │   ├── migrations/              # SQL migrations
 │   │   │   ├── users.ts                 # repo functions
-│   │   │   ├── laptops.ts
+│   │   │   ├── machines.ts
 │   │   │   └── pairings.ts
 │   │   ├── slack/
 │   │   │   ├── adapter.ts               # Bolt + Socket Mode
@@ -727,7 +804,7 @@ slackbot/
 │   │   │   ├── gateway.ts               # @fastify/websocket
 │   │   │   ├── auth.ts                  # JWT verify, server_hello mint
 │   │   │   ├── connections.ts           # in-memory map + indexes
-│   │   │   ├── router.ts                # event → laptop selection
+│   │   │   ├── router.ts                # event → machine selection
 │   │   │   └── rpc-handler.ts           # Slack RPC method catalogue
 │   │   ├── discovery/
 │   │   │   └── handler.ts
@@ -766,8 +843,8 @@ SERVER_PRIVATE_KEY_PATH=/var/secrets/server-ed25519.key
 SERVER_PUBLIC_KEY_PATH=/var/secrets/server-ed25519.pub
 
 # Public URLs the server announces in /discover and /pair
-PUBLIC_SERVER_URL=https://claude-slackbot.tumblr.net
-PUBLIC_WS_URL=wss://claude-slackbot.tumblr.net/ws
+PUBLIC_SERVER_URL=https://claude-slackbot-xyz-uc.a.run.app
+PUBLIC_WS_URL=wss://claude-slackbot-xyz-uc.a.run.app/ws
 
 # Allowed npm publisher (for client auto-update validation)
 ALLOWED_NPM_PUBLISHER=nikitiuk0
@@ -820,9 +897,12 @@ container.
 Secret manager: GCP Secret Manager for `SLACK_BOT_TOKEN`,
 `SLACK_APP_TOKEN`, server private key, DB password.
 
-Custom domain: `claude-slackbot.tumblr.net` mapped to the Cloud Run
-service via Cloud Run's domain mapping (or a Global HTTPS LB if we want
-more control).
+Hostname: the Cloud Run service gets an auto-assigned URL like
+`https://claude-slackbot-xyz-uc.a.run.app` — use that as the canonical
+`PUBLIC_SERVER_URL` for MVP. A custom domain can be mapped later via
+Cloud Run's domain mapping (or a Global HTTPS LB for more control).
+The `/discover` indirection means switching to a custom domain, or
+eventually to on-prem, doesn't require updating any client manually.
 
 ### On-prem path
 
@@ -844,7 +924,7 @@ Everything in the spec works identically on both. The migration playbook
 
 ### Migration playbook (GCP → on-prem)
 
-1. Stand up on-prem deployment at `https://claude-slackbot-onprem.tumblr.net`.
+1. Stand up on-prem deployment at `https://claude-slackbot-onprem.example.com`.
    Same image, same DB schema, copied secrets.
 2. Mirror Postgres from Cloud SQL → on-prem (logical replication, then
    freeze writes briefly, switch primary). Or: dump and restore for
@@ -855,12 +935,17 @@ Everything in the spec works identically on both. The migration playbook
 5. Operator runs `migrate-broadcast --new-url wss://onprem.../ws` on
    the GCP server. Live clients reconnect to on-prem. Total wall clock
    for live clients: seconds.
-6. Wait 24 hours for stragglers (laptops offline during migration) to
+6. Wait 24 hours for stragglers (machines offline during migration) to
    come back. They hit the GCP discovery endpoint, get redirected to
    on-prem, reconnect there.
-7. Update DNS for `claude-slackbot.tumblr.net` to point at on-prem.
-   Accept short propagation window — by now no real traffic is on the
-   GCP IP, only stale-DNS cold-starts hitting a now-empty discovery.
+7. If a custom domain has been attached (e.g. `claude-slackbot.mycorp.com`),
+   repoint its DNS record to on-prem. Accept a short propagation
+   window — by now no real traffic is on the GCP URL, only stale-DNS
+   cold-starts hitting a now-empty discovery endpoint. If no custom
+   domain was ever attached (MVP uses the Cloud Run auto-URL directly):
+   keep the GCP service alive long enough for all machines to have
+   hit discovery at least once and persisted the new on-prem URL
+   (the 24h in step 6 typically covers this), then skip this step.
 8. Shut down GCP services + DB.
 
 ### Cost ballpark on GCP (for sizing intuition)
@@ -880,14 +965,16 @@ Same discipline as Phase A: focus on pure-logic units, stub the I/O
 boundaries.
 
 - Server side:
-  - `db/laptops.ts`, `db/users.ts`, `db/pairings.ts` — repo functions
+  - `db/machines.ts`, `db/users.ts`, `db/pairings.ts` — repo functions
     against pg-mem or Testcontainers Postgres.
   - `pairing/service.ts` — happy path, expired code, double-claim,
-    wrong-user code claim.
+    wrong-user code claim, revoke-previous-machine-on-new-pair
+    transaction atomicity.
   - `ws/auth.ts` — JWT mint + verify, replay rejection, expired
     rejection.
-  - `ws/router.ts` — routing pick (no laptop, single laptop, multiple
-    laptops with most-recent rule).
+  - `ws/router.ts` — routing decisions (no active machine → install
+    flow; active but disconnected → reconnect reply; active and
+    connected → forward).
   - `discovery/handler.ts` — config-driven response.
 - Client side:
   - All Phase A tests survive verbatim (the orchestrator core didn't
@@ -916,17 +1003,17 @@ boundaries.
 `docs/manual-smoke-test-phase-b.md`. Walks operator through:
 
 1. Stand up the server (Cloud Run or local Docker).
-2. Pair a laptop. Verify install confirmation DM.
+2. Pair a machine. Verify install confirmation DM.
 3. Mention from the paired user → verify routing, milestones,
    summary, PR link.
 4. Disconnect daemon mid-run → verify Slack message updates with
    appropriate error.
-5. Pair a second laptop for the same user; verify route-to-most-
+5. Pair a second machine for the same user; verify route-to-most-
    recent.
 6. Unpair via DM; verify no further events route.
 7. Trigger an `update_available`; verify daemon waits for idle, then
    self-updates and reconnects.
-8. Run two profiles on the same laptop; verify isolation.
+8. Run two profiles on the same machine; verify isolation.
 9. Run the migrate broadcast; verify clients move.
 
 ## Phase A → Phase B migration
@@ -936,7 +1023,7 @@ Phase A users (currently: just you) get a single migration command:
 ```bash
 npx -y @nikitiuk0/claude-slackbot pair \
   --profile tumblr \
-  --server https://claude-slackbot.tumblr.net \
+  --server https://claude-slackbot-xyz-uc.a.run.app \
   --code <PAIR-from-DM>
 ```
 
@@ -985,11 +1072,11 @@ launch:
    later: code signing of releases (sigstore / cosign), out-of-band
    version pinning notifications.
 2. **Server-side abuse of routing.** A bug in the router could send
-   Alice's mention to Bob's laptop. Mitigation: every routing query is
+   Alice's mention to Bob's machine. Mitigation: every routing query is
    filtered by `(workspace_id, user_id)` at the SQL level; tests
    enforce this; consider adding row-level security policies in
    Postgres post-MVP.
-3. **Laptop public key replacement.** If an attacker can write to a
+3. **Machine public key replacement.** If an attacker can write to a
    user's `keypair.json`, they can replace it and the next connection
    uses the attacker's key. We rely on OS file permissions (0600).
    Stronger: store private key in OS keychain (macOS Keychain, Linux
@@ -997,14 +1084,14 @@ launch:
 4. **DM spoofing in Slack.** The `install` / `unpair` flow trusts that
    the Slack `user_id` of the DM sender is correct. This is true under
    normal Slack guarantees. A workspace admin who hijacks an account
-   could trigger pairing of a laptop they control. Out of scope; same
+   could trigger pairing of a machine they control. Out of scope; same
    as Phase A.
 
 ## Roadmap (post-Phase B, separate specs)
 
-- **Offline-laptop queuing** with at-rest crypto (`crypto_box_seal`).
+- **Offline-machine queuing** with at-rest crypto (`crypto_box_seal`).
 - **Per-mention permission relay** (interactive Slack approve/deny).
-- **Web admin UI** for the operator (live ops view, revoke laptops,
+- **Web admin UI** for the operator (live ops view, revoke machines,
   see queue depth).
 - **Cost tracking** per session via Anthropic billing integration.
 - **launchd / systemd auto-install hardening** (signed plists,
