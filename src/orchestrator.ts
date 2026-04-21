@@ -644,6 +644,7 @@ export class Orchestrator {
     const lineStream = new LineStream();
     const milestones: string[] = [];
     let summary: string | null = null;
+    let lastAssistantText: string | null = null;
     let observedSessionId: string | null = null;
 
     let parserError: string | undefined;
@@ -666,6 +667,8 @@ export class Orchestrator {
               text: ev.text,
             })
             .catch((err) => jlog.warn({ err }, "failed to persist milestone"));
+        } else if (ev.kind === "text") {
+          lastAssistantText = ev.text;
         } else if (ev.kind === "summary") {
           summary = ev.text;
         }
@@ -747,18 +750,24 @@ export class Orchestrator {
         lastEventAt: ts,
       });
     } else if (result.exitCode === 0) {
-      jlog.warn("job done (no structured summary returned)");
-      const text =
-        milestones.length > 0 ? milestones.join("\n") : "(no output)";
+      jlog.warn(
+        {
+          sawText: Boolean(lastAssistantText),
+          lastTextSnippet: lastAssistantText
+            ? (lastAssistantText as string).slice(0, 500)
+            : undefined,
+          milestoneCount: milestones.length,
+        },
+        "job done (no structured summary returned)"
+      );
       await this.replaceStatusWithFinalReply(
         channelId,
         threadTs,
         status.ts,
-        `${text}\n\n_(no structured summary returned)_`,
+        formatNoSummaryMessage(milestones),
         jlog
       );
-      await this.d.slack.addReaction(channelId, triggerMsgTs, "white_check_mark");
-      await this.d.slack.addReaction(channelId, triggerMsgTs, "shrug");
+      await this.d.slack.addReaction(channelId, triggerMsgTs, "warning");
       await this.d.state.upsertThread(threadTs, {
         sessionId: finalSessionId,
         channelId,
@@ -841,6 +850,25 @@ export function formatHistory(entries: HistoryEntry[]): string {
     ].join("\n");
   }
   return ["History (most recent run):", "```", body, "```"].join("\n");
+}
+
+/**
+ * Build the Slack message for the "exit 0 but no <slack-summary>" path.
+ * Shows up to the last 3 milestones as context so the operator can see what
+ * Claude was doing just before it punted, then points at `nudge` / `reset`.
+ */
+export function formatNoSummaryMessage(milestones: string[]): string {
+  const lines = ["⚠️ Claude ended its turn without a summary."];
+  if (milestones.length > 0) {
+    const tail = milestones.slice(-3);
+    lines.push("", "Last actions:");
+    for (const m of tail) lines.push(`• ${toSingleLine(m, 200)}`);
+  }
+  lines.push(
+    "",
+    "This usually means the session is stuck. Try `nudge` or `reset`."
+  );
+  return lines.join("\n");
 }
 
 /**

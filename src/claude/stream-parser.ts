@@ -3,6 +3,7 @@ import { z } from "zod";
 export type ParseEvent =
   | { kind: "session-init"; sessionId: string }
   | { kind: "milestone"; text: string }
+  | { kind: "text"; text: string }
   | { kind: "summary"; text: string }
   | { kind: "result"; success: boolean; subtype: string; error?: string };
 
@@ -111,6 +112,9 @@ export async function* parseStream(
         }
         const t = TextItem.safeParse(item);
         if (t.success) {
+          if (t.data.text.length > 0) {
+            yield { kind: "text", text: t.data.text };
+          }
           const match = SUMMARY_RE.exec(t.data.text);
           if (match?.[1] !== undefined) {
             yield { kind: "summary", text: match[1].trim() };

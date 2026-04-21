@@ -87,6 +87,46 @@ describe("parseStream", () => {
     expect((milestone as any).text).toBe("Running `npm test`");
   });
 
+  it("emits a text event for every non-empty assistant text block", async () => {
+    const events = await collect(fixture);
+    const texts = events.filter((e) => e.kind === "text");
+    const bodies = texts.map((e) => (e as any).text as string);
+    // Both the plain "Looking at the file..." line and the block that also
+    // contains <slack-summary> should surface as text events.
+    expect(bodies.some((b) => b.includes("Looking at the file"))).toBe(true);
+    expect(bodies.some((b) => b.includes("<slack-summary>"))).toBe(true);
+  });
+
+  it("emits a text event AND a summary event for a block that wraps a summary", async () => {
+    const ndjson = JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "text",
+            text:
+              "Some reasoning.\n\n<slack-summary>\nSummary: ok\n</slack-summary>",
+          },
+        ],
+      },
+    });
+    const events = await collect(ndjson);
+    const text = events.find((e) => e.kind === "text");
+    const summary = events.find((e) => e.kind === "summary");
+    expect(text).toBeDefined();
+    expect(summary).toBeDefined();
+    expect((summary as any).text).toBe("Summary: ok");
+  });
+
+  it("does not emit a text event for empty text blocks", async () => {
+    const ndjson = JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "" }] },
+    });
+    const events = await collect(ndjson);
+    expect(events.find((e) => e.kind === "text")).toBeUndefined();
+  });
+
   it("emits structured error info for non-success result lines", async () => {
     const events = await collect(
       [

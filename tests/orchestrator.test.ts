@@ -153,6 +153,72 @@ describe("Orchestrator", () => {
     expect((d.runClaude as any).mock.calls.length).toBe(2);
   });
 
+  it("exit 0 with no <slack-summary> posts a warning with the last 3 milestones and a single ⚠️ reaction", async () => {
+    const d = deps({
+      runClaude: vi.fn(async (input, onLine) => {
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        // Four tool_use events so we can verify the "last 3" truncation.
+        for (const cmd of ["git log", "git diff", "git diff src/"]) {
+          onLine(
+            JSON.stringify({
+              type: "assistant",
+              message: { content: [{ type: "tool_use", name: "Bash", input: { command: cmd } }] },
+            })
+          );
+        }
+        onLine(
+          JSON.stringify({
+            type: "assistant",
+            message: { content: [{ type: "tool_use", name: "SendMessage", input: {} }] },
+          })
+        );
+        // Notice: no text block at all — this is the "Claude punted" path.
+        return { exitCode: 0, signal: null, stderr: "" };
+      }),
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m());
+    await o.idle();
+    o.stop();
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    const finalReply: string = replyCalls[replyCalls.length - 1][2];
+    expect(finalReply).toMatch(/⚠️ Claude ended its turn without a summary/);
+    expect(finalReply).toMatch(/Last actions:/);
+    // Oldest of the four should be truncated away — only last 3 survive.
+    expect(finalReply).not.toMatch(/Running `git log`/);
+    expect(finalReply).toMatch(/Running `git diff`/);
+    expect(finalReply).toMatch(/Running `git diff src\/`/);
+    expect(finalReply).toMatch(/Using tool: SendMessage/);
+    expect(finalReply).toMatch(/Try `nudge` or `reset`/);
+    const reactionCalls = (d.slack.addReaction as any).mock.calls;
+    const reactionsOnTrigger = reactionCalls
+      .filter((c: any[]) => c[0] === "C1" && c[1] === "T1")
+      .map((c: any[]) => c[2]);
+    expect(reactionsOnTrigger).toContain("warning");
+    expect(reactionsOnTrigger).not.toContain("white_check_mark");
+    expect(reactionsOnTrigger).not.toContain("shrug");
+  });
+
+  it("exit 0 with no milestones and no summary still posts the warning (no 'Last actions' section)", async () => {
+    const d = deps({
+      runClaude: vi.fn(async (input, onLine) => {
+        onLine(JSON.stringify({ type: "system", subtype: "init", session_id: "S" }));
+        return { exitCode: 0, signal: null, stderr: "" };
+      }),
+    });
+    const o = new Orchestrator(d);
+    await o.start();
+    await o.enqueue(m());
+    await o.idle();
+    o.stop();
+    const replyCalls = (d.slack.postReply as any).mock.calls;
+    const finalReply: string = replyCalls[replyCalls.length - 1][2];
+    expect(finalReply).toMatch(/⚠️ Claude ended its turn without a summary/);
+    expect(finalReply).not.toMatch(/Last actions:/);
+    expect(finalReply).toMatch(/Try `nudge` or `reset`/);
+  });
+
   it("respects global parallel cap; queues over the cap", async () => {
     const releases: Array<() => void> = [];
     const d = deps({

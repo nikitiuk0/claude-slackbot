@@ -54,7 +54,8 @@ export type Reaction =
   | "broom"
   | "octagonal_sign"
   | "no_entry_sign"
-  | "shrug";
+  | "shrug"
+  | "warning";
 
 export type SlackClientFacade = {
   postReply: (channel: string, threadTs: string, text: string) => Promise<{ ts: string }>;
