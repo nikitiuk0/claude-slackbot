@@ -2,18 +2,16 @@
 
 A Slack bot that routes `@mention`s to a local Claude Code daemon on your laptop — so you can kick off real software engineering work from any Slack thread.
 
+Multi-user from a single shared `@claude-bot` app: a small relay server holds the Slack tokens and fans each mention out over an authenticated WebSocket to the originating user's paired machine. Your code, credentials, and Claude session stay on your laptop; the server is a thin transport layer.
+
 <img width="410" height="816" alt="Screenshot 2026-04-20 at 2 15 41 AM" src="https://github.com/user-attachments/assets/156cabcb-f568-45bf-8967-64796ad1c4b4" />
 
 ---
 
-## Phase B (current) — multi-user relay
-
-Phase B adds a shared relay server that holds the Slack tokens, so multiple engineers on the same workspace can each pair their own laptop. The server fans each mention out over an authenticated WebSocket connection to the right machine.
-
-### Install (client)
+## Install (client)
 
 ```bash
-# Step 1 — DM @claude-bot in Slack to get a pairing code, then:
+# Step 1 — DM @claude-bot in Slack (or @-mention it once) to get a pairing code, then:
 npx -y @nikitiuk0/claude-slackbot pair \
   --profile <name> \
   --server https://<server-url> \
@@ -23,43 +21,39 @@ npx -y @nikitiuk0/claude-slackbot pair \
 npx -y @nikitiuk0/claude-slackbot start
 ```
 
-The `pair` command generates an Ed25519 keypair locally, registers it with the server, and writes a profile under `~/.claude-slackbot/profiles/<name>/`. The daemon connects to the server over a signed WebSocket and processes only the mentions that belong to your Slack user.
+`cd` into your target working folder before running `pair` — the daemon will spawn `claude` with that directory as cwd.
 
-### Migrating from Phase A
+`pair` generates an Ed25519 keypair locally, registers it with the server, and writes a profile under `~/.claude-slackbot/profiles/<name>/`. The daemon connects over a signed WebSocket and processes only mentions that belong to your Slack user.
 
-If you previously ran Phase A (single-user, `data/state.json` in the repo root), pass `--migrate-from auto` to copy threads, milestones, and attachments into the new profile:
+### Multiple workspaces (profiles)
+
+A single laptop can pair against multiple servers. Each gets its own profile:
 
 ```bash
-npx -y @nikitiuk0/claude-slackbot pair \
-  --profile default \
-  --server https://<server-url> \
-  --code <PAIR-...> \
-  --migrate-from auto
+npx -y @nikitiuk0/claude-slackbot pair --profile work --server https://work-server ...
+npx -y @nikitiuk0/claude-slackbot pair --profile personal --server https://personal-server ...
+npx -y @nikitiuk0/claude-slackbot start          # runs every profile concurrently
+npx -y @nikitiuk0/claude-slackbot profiles list
+npx -y @nikitiuk0/claude-slackbot unpair --profile personal
 ```
 
-### Operator (server setup)
+---
 
-See [`server/README.md`](server/README.md) for Postgres setup, keypair generation, GCP Secret Manager config, and `gcloud run deploy` command.
+## Operator (server setup)
+
+See [`server/README.md`](server/README.md) for Postgres setup, keypair generation, GCP Secret Manager config, and the `gcloud run deploy` command. A `docker-compose.yml` at the repo root brings up Postgres + the server for local dev.
 
 Full design: [`docs/superpowers/specs/2026-04-20-phase-b-multi-user-design.md`](docs/superpowers/specs/2026-04-20-phase-b-multi-user-design.md).
 
 ---
 
-## Phase A (legacy)
+## How it works
 
-Phase A was a single-user daemon: one `.env` + `config.json`, runs directly on your laptop, no server needed. It is tagged at [`v0.1.0-phase-a`](https://github.com/nikitiuk0/claude-slackbot/releases/tag/v0.1.0-phase-a).
-
-To use Phase A, check out that tag and follow the README there. For the original design rationale see [`docs/superpowers/specs/2026-04-19-claude-slackbot-design.md`](docs/superpowers/specs/2026-04-19-claude-slackbot-design.md).
-
----
-
-## How it works (Phase B)
-
-`@mention` the bot in any channel → the server identifies your Slack user → sends the event over WebSocket to your paired laptop → your machine spawns a local `claude` CLI session pointed at a configured working folder → Claude reads the codebase, edits files, runs tests, pushes branches, opens PRs → milestones stream back in real time → structured summary posted when done.
+`@mention` the bot in any channel → the server identifies your Slack user → sends the event over WebSocket to your paired laptop → your machine spawns a local `claude` CLI session pointed at the configured working folder → Claude reads the codebase, edits files, runs tests, pushes branches, opens PRs → milestones stream back in real time → structured summary posted when done.
 
 Key properties:
-- **Runs locally.** Your code and credentials never leave your machine. The server only relays Slack events and RPC calls.
-- **Multi-user.** Each engineer pairs their own laptop. The server routes mentions to the right machine per Slack user.
+- **Runs locally.** Your code and credentials never leave your machine. The server only relays Slack events and Slack RPC calls; it never persists Slack content.
+- **Multi-user.** Each engineer pairs their own laptop. The server routes mentions to the right machine per Slack user. Re-pairing automatically revokes the previous machine.
 - **Uses your Claude Code setup.** The daemon shells out to the `claude` CLI, inheriting your MCP servers, custom skills, settings, and auth.
 - **Bounded blast radius.** Claude runs inside one configured folder and opens draft PRs by default.
 
@@ -80,6 +74,6 @@ Key properties:
 
 ## Architecture
 
-The relay server is a Node.js + TypeScript process that runs on Cloud Run (always-on, min=max=1 for Socket Mode). Each client daemon connects over a mutual-auth WebSocket (Ed25519 JWT). Pairing state lives in Postgres; the server holds Slack tokens and fan-outs RPC calls to the correct machine.
+The relay server is a Node.js + TypeScript process that runs on Cloud Run (always-on, `min=max=1` for Slack Socket Mode). Each client daemon connects over a mutually-authenticated WebSocket (Ed25519 JWT, server-key pinning). Identity rows (`users`, `machines`, `pairings`) live in Postgres — that's the entire server-side data model. The server holds the Slack bot token and dispatches each Slack RPC call (`postReply`, `addReaction`, `getThread`, `downloadFile`, …) on behalf of the connected machine.
 
 Full implementation plan: [`docs/superpowers/plans/2026-04-20-phase-b-multi-user.md`](docs/superpowers/plans/2026-04-20-phase-b-multi-user.md).
