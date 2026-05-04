@@ -19,14 +19,21 @@ export function registerPairRoute(
     if (!parsed.success) {
       return reply.code(400).send({ error: "invalid body", detail: parsed.error.issues });
     }
-    const pub = Buffer.from(parsed.data.machine_public_key, "base64");
-    if (pub.length !== 32) {
-      return reply.code(400).send({ error: "machine_public_key must be 32 bytes (Ed25519)" });
+    let jwk: { kty?: unknown; crv?: unknown; x?: unknown };
+    try {
+      const decoded = Buffer.from(parsed.data.machine_public_key, "base64").toString("utf8");
+      jwk = JSON.parse(decoded);
+    } catch {
+      return reply.code(400).send({ error: "machine_public_key must be base64-encoded JWK JSON" });
     }
+    if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.x !== "string" || jwk.x.length === 0) {
+      return reply.code(400).send({ error: "machine_public_key must be an Ed25519 OKP JWK" });
+    }
+    const pubKeyBytes = Buffer.from(JSON.stringify(jwk), "utf8");
     try {
       const { machineId, revokedPrevious } = await claimPairing(deps.pool, {
         code: parsed.data.code,
-        publicKey: pub,
+        publicKey: pubKeyBytes,
         label: parsed.data.label,
       });
       return {

@@ -29,6 +29,9 @@ async function setup() {
   return { app, pool };
 }
 
+const jwkFixture = { kty: "OKP", crv: "Ed25519", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" };
+const machinePubKey = Buffer.from(JSON.stringify(jwkFixture), "utf8").toString("base64");
+
 describe("POST /pair", () => {
   it("claims a live code and returns machine_id + server_public_key + ws_url", async () => {
     const { app, pool } = await setup();
@@ -37,7 +40,7 @@ describe("POST /pair", () => {
     const res = await app.inject({
       method: "POST",
       url: "/pair",
-      payload: { code: p.pairingCode, machine_public_key: Buffer.from("0123456789abcdef0123456789abcdef").toString("base64"), label: "m1" },
+      payload: { code: p.pairingCode, machine_public_key: machinePubKey, label: "m1" },
     });
     expect(res.statusCode).toBe(200);
     const body = res.json();
@@ -57,7 +60,7 @@ describe("POST /pair", () => {
     const res = await app.inject({
       method: "POST",
       url: "/pair",
-      payload: { code: "PAIR-old", machine_public_key: Buffer.from("0123456789abcdef0123456789abcdef").toString("base64") },
+      payload: { code: "PAIR-old", machine_public_key: machinePubKey },
     });
     expect(res.statusCode).toBe(410);
   });
@@ -66,12 +69,11 @@ describe("POST /pair", () => {
     const { app, pool } = await setup();
     await users.upsertUser(pool, { workspaceId: "T1", userId: "U1" });
     const p = await pairings.createPairing(pool, { workspaceId: "T1", userId: "U1" });
-    const pk = Buffer.from("0123456789abcdef0123456789abcdef").toString("base64");
-    await app.inject({ method: "POST", url: "/pair", payload: { code: p.pairingCode, machine_public_key: pk } });
+    await app.inject({ method: "POST", url: "/pair", payload: { code: p.pairingCode, machine_public_key: machinePubKey } });
     const res = await app.inject({
       method: "POST",
       url: "/pair",
-      payload: { code: p.pairingCode, machine_public_key: pk },
+      payload: { code: p.pairingCode, machine_public_key: machinePubKey },
     });
     expect(res.statusCode).toBe(409);
   });
@@ -81,8 +83,18 @@ describe("POST /pair", () => {
     const res = await app.inject({
       method: "POST",
       url: "/pair",
-      payload: { code: "PAIR-none", machine_public_key: Buffer.from("0123456789abcdef0123456789abcdef").toString("base64") },
+      payload: { code: "PAIR-none", machine_public_key: machinePubKey },
     });
     expect(res.statusCode).toBe(404);
+  });
+
+  it("returns 400 for non-JWK public_key", async () => {
+    const { app } = await setup();
+    const res = await app.inject({
+      method: "POST",
+      url: "/pair",
+      payload: { code: "PAIR-anything", machine_public_key: Buffer.from("not-a-jwk").toString("base64") },
+    });
+    expect(res.statusCode).toBe(400);
   });
 });
