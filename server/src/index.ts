@@ -1,11 +1,15 @@
 import { config as loadDotEnv } from "dotenv";
 import Fastify from "fastify";
+import fastifyWebsocket from "@fastify/websocket";
 import { loadConfig } from "./config.js";
 import { createLogger } from "./log.js";
 import { createPool, migrate } from "./db/pool.js";
 import { loadServiceKey } from "./identity/service-key.js";
+import { createJwtSigner, InMemoryJtiStore } from "./identity/jwt.js";
 import { registerDiscovery } from "./discovery/handler.js";
 import { registerPairRoute } from "./pairing/route.js";
+import { ConnectionRegistry } from "./ws/connections.js";
+import { registerWsGateway } from "./ws/gateway.js";
 
 async function main() {
   loadDotEnv();
@@ -25,12 +29,19 @@ async function main() {
 
   const app = Fastify({ logger: false });
 
+  await app.register(fastifyWebsocket);
+
+  const registry = new ConnectionRegistry();
+  const serverSigner = createJwtSigner({ privateKey: serviceKey.privateKey });
+  const jtiStore = new InMemoryJtiStore();
+
   registerDiscovery(app, { publicWsUrl: cfg.publicWsUrl });
   registerPairRoute(app, {
     pool,
     publicWsUrl: cfg.publicWsUrl,
     serverPublicKeyJwk: serviceKey.publicKeyJwk,
   });
+  registerWsGateway(app, { pool, registry, jtiStore, serverSigner });
 
   await app.listen({ port: cfg.port, host: "0.0.0.0" });
   log.info({ port: cfg.port }, "listening");
