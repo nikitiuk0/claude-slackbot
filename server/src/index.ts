@@ -129,6 +129,17 @@ async function main() {
 
   await app.listen({ port: cfg.port, host: "0.0.0.0" });
   log.info({ port: cfg.port }, "listening");
+
+  const shutdown = async (sig: string) => {
+    log.info({ sig }, "shutting down");
+    stopAnnouncer();
+    try { await slackAdapter.stop(); } catch {}
+    try { await app.close(); } catch {}
+    try { await pool.end(); } catch {}
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 main().catch((err) => {
