@@ -5,6 +5,7 @@ import { createLogger } from "./log.js";
 import { createPool, migrate } from "./db/pool.js";
 import { loadServiceKey } from "./identity/service-key.js";
 import { registerDiscovery } from "./discovery/handler.js";
+import { registerPairRoute } from "./pairing/route.js";
 
 async function main() {
   loadDotEnv();
@@ -25,6 +26,11 @@ async function main() {
   const app = Fastify({ logger: false });
 
   registerDiscovery(app, { publicWsUrl: cfg.publicWsUrl });
+  registerPairRoute(app, {
+    pool,
+    publicWsUrl: cfg.publicWsUrl,
+    serverPublicKeyJwk: serviceKey.publicKeyJwk,
+  });
 
   await app.listen({ port: cfg.port, host: "0.0.0.0" });
   log.info({ port: cfg.port }, "listening");
