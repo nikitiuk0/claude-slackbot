@@ -11,6 +11,7 @@ import { registerPairRoute } from "./pairing/route.js";
 import { ConnectionRegistry } from "./ws/connections.js";
 import { registerWsGateway } from "./ws/gateway.js";
 import { broadcastMigrate } from "./ws/broadcasts.js";
+import { startUpdateAnnouncer } from "./update/announcer.js";
 
 async function main() {
   loadDotEnv();
@@ -55,6 +56,12 @@ async function main() {
       return { sent: count };
     });
   }
+
+  const stopAnnouncer = startUpdateAnnouncer({
+    registry,
+    packageName: "@nikitiuk0/claude-slackbot",
+    log,
+  });
 
   await app.listen({ port: cfg.port, host: "0.0.0.0" });
   log.info({ port: cfg.port }, "listening");
