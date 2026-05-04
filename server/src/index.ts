@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { createLogger } from "./log.js";
 import { createPool, migrate } from "./db/pool.js";
 import { loadServiceKey } from "./identity/service-key.js";
+import { registerDiscovery } from "./discovery/handler.js";
 
 async function main() {
   loadDotEnv();
@@ -23,7 +24,7 @@ async function main() {
 
   const app = Fastify({ logger: false });
 
-  // Routes come in Task 3.2 and later.
+  registerDiscovery(app, { publicWsUrl: cfg.publicWsUrl });
 
   await app.listen({ port: cfg.port, host: "0.0.0.0" });
   log.info({ port: cfg.port }, "listening");
