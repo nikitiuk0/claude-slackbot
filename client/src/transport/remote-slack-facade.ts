@@ -8,6 +8,7 @@ type Pending = {
 
 export type RemoteSlackFacade = SlackClientFacade & {
   _ingest: (msg: any) => void;
+  getThread: (channelId: string, threadTs: string) => Promise<{ raw: any[]; displayNames: Record<string, string> }>;
 };
 
 export function createRemoteSlackFacade(opts: {
@@ -39,6 +40,12 @@ export function createRemoteSlackFacade(opts: {
     async permalink(channel, ts) {
       const { url } = await rpc<{ url: string }>("permalink", { channel, ts });
       return url;
+    },
+    async getThread(channelId, threadTs) {
+      return rpc<{ raw: any[]; displayNames: Record<string, string> }>("getThread", {
+        channel: channelId,
+        thread_ts: threadTs,
+      });
     },
     _ingest(msg) {
       if (msg.type !== "slack_rpc_response" || typeof msg.id !== "string") return;

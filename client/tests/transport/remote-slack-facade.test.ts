@@ -29,4 +29,14 @@ describe("RemoteSlackFacade", () => {
     const facade = createRemoteSlackFacade({ send: () => {}, timeoutMs: 10 });
     await expect(facade.postReply("C1", "1", "x")).rejects.toThrow(/timeout/i);
   });
+
+  it("getThread returns raw + displayNames", async () => {
+    const sent: any[] = [];
+    const facade = createRemoteSlackFacade({ send: (m) => sent.push(m), timeoutMs: 1000 });
+    const p = facade.getThread("C1", "1.0");
+    const req = sent[0];
+    expect(req.method).toBe("getThread");
+    facade._ingest({ type: "slack_rpc_response", id: req.id, result: { raw: [], displayNames: {} } });
+    expect(await p).toEqual({ raw: [], displayNames: {} });
+  });
 });
