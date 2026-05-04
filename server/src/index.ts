@@ -10,6 +10,7 @@ import { registerDiscovery } from "./discovery/handler.js";
 import { registerPairRoute } from "./pairing/route.js";
 import { ConnectionRegistry } from "./ws/connections.js";
 import { registerWsGateway } from "./ws/gateway.js";
+import { broadcastMigrate } from "./ws/broadcasts.js";
 
 async function main() {
   loadDotEnv();
@@ -42,6 +43,18 @@ async function main() {
     serverPublicKeyJwk: serviceKey.publicKeyJwk,
   });
   registerWsGateway(app, { pool, registry, jtiStore, serverSigner });
+
+  const opsSecret = process.env.OPS_ADMIN_SECRET;
+  if (opsSecret) {
+    app.post("/ops/migrate", async (req, reply) => {
+      if (req.headers["x-ops-admin"] !== opsSecret) return reply.code(403).send({ error: "forbidden" });
+      const body = req.body as any;
+      const newUrl = body?.new_url;
+      if (typeof newUrl !== "string") return reply.code(400).send({ error: "missing new_url" });
+      const count = broadcastMigrate(registry, newUrl);
+      return { sent: count };
+    });
+  }
 
   await app.listen({ port: cfg.port, host: "0.0.0.0" });
   log.info({ port: cfg.port }, "listening");
