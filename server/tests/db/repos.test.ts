@@ -31,6 +31,11 @@ describe("users repo", () => {
     const r = await pool.query(`SELECT display_name FROM users WHERE slack_user_id='U1'`);
     expect(r.rows).toHaveLength(1);
     expect(r.rows[0].display_name).toBe("Alice Updated");
+
+    // Calling without displayName preserves the existing one (COALESCE branch).
+    await users.upsertUser(pool, { workspaceId: "T1", userId: "U1" });
+    const r2 = await pool.query(`SELECT display_name FROM users WHERE slack_user_id='U1'`);
+    expect(r2.rows[0].display_name).toBe("Alice Updated");
   });
 });
 
@@ -97,5 +102,11 @@ describe("machines repo", () => {
     expect(revoked).toBe(2);
     const active = await machines.listActiveByUser(pool, { workspaceId: "T1", userId: "U1" });
     expect(active).toHaveLength(0);
+
+    // Raw rows should be marked revoked with a timestamp set.
+    const raw = await pool.query(`SELECT status, revoked_at FROM machines WHERE slack_workspace_id='T1' AND slack_user_id='U1'`);
+    expect(raw.rows.length).toBe(2);
+    expect(raw.rows.every(r => r.status === 'revoked')).toBe(true);
+    expect(raw.rows.every(r => r.revoked_at !== null)).toBe(true);
   });
 });
