@@ -5,12 +5,15 @@ import { importJWK, type KeyLike } from "jose";
 import { createJwtVerifier, type JtiStore, type JwtSigner } from "../identity/jwt.js";
 import type { ConnectionRegistry } from "./connections.js";
 import * as machines from "../db/machines.js";
+import { handleRpcRequest } from "./rpc-handler.js";
 
 type Deps = {
   pool: Pool;
   registry: ConnectionRegistry;
   jtiStore: JtiStore;
   serverSigner: JwtSigner;
+  slackApi?: any;      // wired in Phase 8
+  botToken?: string;   // wired in Phase 8
 };
 
 export function registerWsGateway(app: FastifyInstance, deps: Deps) {
@@ -86,8 +89,35 @@ export function registerWsGateway(app: FastifyInstance, deps: Deps) {
     ws.on("message", (data) => {
       try {
         const msg = JSON.parse(String(data));
-        if (msg.type === "pong") conn.lastPingAt = Date.now();
-        // Other message types handled by the RPC handler (Phase 5).
+        if (msg.type === "pong") {
+          conn.lastPingAt = Date.now();
+        } else if (msg.type === "slack_rpc_request" && typeof msg.id === "string") {
+          void (async () => {
+            if (!deps.slackApi || !deps.botToken) {
+              ws.send(JSON.stringify({
+                type: "slack_rpc_response",
+                id: msg.id,
+                error: { message: "server slack client not configured" },
+              }));
+              return;
+            }
+            try {
+              const result = await handleRpcRequest({
+                slackClient: deps.slackApi,
+                botToken: deps.botToken,
+                method: msg.method,
+                params: msg.params ?? {},
+              });
+              ws.send(JSON.stringify({ type: "slack_rpc_response", id: msg.id, result }));
+            } catch (err: any) {
+              ws.send(JSON.stringify({
+                type: "slack_rpc_response",
+                id: msg.id,
+                error: { message: err?.message ?? String(err), code: err?.data?.error },
+              }));
+            }
+          })();
+        }
       } catch { /* ignore malformed */ }
     });
     void machines.touchLastSeen(deps.pool, machine.machineId);
