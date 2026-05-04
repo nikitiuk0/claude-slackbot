@@ -13,6 +13,7 @@ async function freshPool() {
   mem.public.registerFunction({
     name: "gen_random_uuid",
     returns: DataType.uuid,
+    impure: true,
     implementation: () => crypto.randomUUID(),
   });
   mem.registerExtension("pgcrypto", () => {});

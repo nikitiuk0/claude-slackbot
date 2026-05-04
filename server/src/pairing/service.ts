@@ -1,5 +1,4 @@
 import type { Pool, PoolClient } from "pg";
-import { randomUUID } from "node:crypto";
 
 export class ClaimError extends Error {
   constructor(public code: "unknown" | "expired" | "consumed", message: string) {
@@ -70,13 +69,11 @@ async function insertMachineTx(
   client: PoolClient,
   args: { workspaceId: string; userId: string; publicKey: Buffer; label?: string }
 ): Promise<{ machineId: string }> {
-  // Generate the UUID in application code so pg-mem's cached gen_random_uuid()
-  // mock doesn't produce PK collisions across tests that insert multiple machines.
-  const machineId = randomUUID();
-  await client.query(
-    `INSERT INTO machines (machine_id, slack_workspace_id, slack_user_id, public_key, label, status)
-     VALUES ($1, $2, $3, $4, $5, 'active')`,
-    [machineId, args.workspaceId, args.userId, args.publicKey, args.label ?? null]
+  const r = await client.query<{ machine_id: string }>(
+    `INSERT INTO machines (slack_workspace_id, slack_user_id, public_key, label, status)
+     VALUES ($1, $2, $3, $4, 'active')
+     RETURNING machine_id`,
+    [args.workspaceId, args.userId, args.publicKey, args.label ?? null]
   );
-  return { machineId };
+  return { machineId: r.rows[0]!.machine_id };
 }

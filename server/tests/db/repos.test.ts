@@ -10,7 +10,12 @@ import * as pairings from "../../src/db/pairings.js";
 
 async function freshDb(): Promise<{ pool: Pool; mem: IMemoryDb }> {
   const mem = newDb({ autoCreateForeignKeyIndices: true });
-  mem.public.registerFunction({ name: "gen_random_uuid", returns: DataType.uuid, implementation: () => crypto.randomUUID() });
+  mem.public.registerFunction({
+    name: "gen_random_uuid",
+    returns: DataType.uuid,
+    impure: true,
+    implementation: () => crypto.randomUUID(),
+  });
   mem.registerExtension("pgcrypto", () => {});
   const here = dirname(fileURLToPath(import.meta.url));
   const sql = readFileSync(join(here, "..", "..", "src", "db", "migrations", "0001_init.sql"), "utf8");
@@ -91,12 +96,10 @@ describe("machines repo", () => {
     });
     // Force two active rows for the test by going under the unique partial index.
     // (Real Postgres enforces the index; pg-mem v3 would too, so we DROP it in freshDb above.)
-    // Provide an explicit machine_id because pg-mem v3's gen_random_uuid() mock may return
-    // a cached value within the same test run, causing a PK collision.
     await pool.query(
-      `INSERT INTO machines (machine_id, slack_workspace_id, slack_user_id, public_key, label, status)
-       VALUES ($1,'T1','U1',$2,'m2','active')`,
-      [crypto.randomUUID(), Buffer.from("pk2")]
+      `INSERT INTO machines (slack_workspace_id, slack_user_id, public_key, label, status)
+       VALUES ('T1','U1',$1,'m2','active')`,
+      [Buffer.from("pk2")]
     );
     const revoked = await machines.revokeActiveByUser(pool, { workspaceId: "T1", userId: "U1" });
     expect(revoked).toBe(2);
