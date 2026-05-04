@@ -49,6 +49,8 @@ Full design: [`docs/superpowers/specs/2026-04-20-phase-b-multi-user-design.md`](
 
 ## How it works
 
+![Architecture overview](docs/architecture-overview.svg)
+
 `@mention` the bot in any channel → the server identifies your Slack user → sends the event over WebSocket to your paired laptop → your machine spawns a local `claude` CLI session pointed at the configured working folder → Claude reads the codebase, edits files, runs tests, pushes branches, opens PRs → milestones stream back in real time → structured summary posted when done.
 
 Key properties:
@@ -76,4 +78,4 @@ Key properties:
 
 The relay server is a Node.js + TypeScript process that runs on Cloud Run (always-on, `min=max=1` for Slack Socket Mode). Each client daemon connects over a mutually-authenticated WebSocket (Ed25519 JWT, server-key pinning). Identity rows (`users`, `machines`, `pairings`) live in Postgres — that's the entire server-side data model. The server holds the Slack bot token and dispatches each Slack RPC call (`postReply`, `addReaction`, `getThread`, `downloadFile`, …) on behalf of the connected machine.
 
-Full implementation plan: [`docs/superpowers/plans/2026-04-20-phase-b-multi-user.md`](docs/superpowers/plans/2026-04-20-phase-b-multi-user.md).
+For the full picture (system overview, pairing flow, mention/task flow, storage, auth) see [`docs/architecture.md`](docs/architecture.md). Full implementation plan: [`docs/superpowers/plans/2026-04-20-phase-b-multi-user.md`](docs/superpowers/plans/2026-04-20-phase-b-multi-user.md).
