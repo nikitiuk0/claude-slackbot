@@ -18,10 +18,12 @@ oauth_config:
       - reactions:write
       - users:read
       - files:read
+      - im:write
 settings:
   event_subscriptions:
     bot_events:
       - app_mention
+      - message.im
   interactivity:
     is_enabled: false
   org_deploy_enabled: false
