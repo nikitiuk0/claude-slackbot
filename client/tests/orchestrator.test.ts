@@ -2,8 +2,8 @@ import { describe, it, expect, vi } from "vitest";
 import {
   Orchestrator,
   type OrchestratorDeps,
-} from "../src/orchestrator.js";
-import type { IncomingMention } from "../src/slack/adapter.js";
+} from "../src/core/orchestrator.js";
+import type { IncomingMention } from "../src/core/slack/adapter.js";
 
 function deps(over: Partial<OrchestratorDeps> = {}): OrchestratorDeps {
   return {

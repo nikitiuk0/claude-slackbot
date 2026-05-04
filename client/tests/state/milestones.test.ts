@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MilestonesStore } from "../../src/state/milestones.js";
+import { MilestonesStore } from "../../src/core/state/milestones.js";
 
 let dir: string;
 

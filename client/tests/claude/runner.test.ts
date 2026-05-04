@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, chmodSync, copyFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ClaudeRunner } from "../../src/claude/runner.js";
+import { ClaudeRunner } from "../../src/core/claude/runner.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 let dir: string;

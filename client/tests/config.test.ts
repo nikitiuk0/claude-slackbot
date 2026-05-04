@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { loadConfig } from "../src/config.js";
+import { loadConfig } from "../src/core/config.js";
 
 describe("loadConfig", () => {
   it("parses a valid env + json bundle", () => {

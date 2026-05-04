@@ -3,7 +3,7 @@ import {
   buildInitialInput,
   buildFollowUpInput,
   type RenderedMessage,
-} from "../../src/prompt/build-input.js";
+} from "../../src/core/prompt/build-input.js";
 
 const sys = "SYS";
 

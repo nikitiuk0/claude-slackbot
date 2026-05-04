@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderAttachmentLines, type Attachment } from "../../src/slack/attachments.js";
+import { renderAttachmentLines, type Attachment } from "../../src/core/slack/attachments.js";
 
 describe("renderAttachmentLines", () => {
   it("includes local path for downloaded images and slack link for non-downloaded files", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { renderThread, type RawSlackMessage } from "../../src/slack/thread-fetch.js";
+import { renderThread, type RawSlackMessage } from "../../src/core/slack/thread-fetch.js";
 
 const userMap = new Map<string, string>([
   ["U1", "Alice"],

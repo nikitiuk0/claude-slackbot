@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { toSlackMrkdwn } from "../../src/slack/mrkdwn.js";
+import { toSlackMrkdwn } from "../../src/core/slack/mrkdwn.js";
 
 describe("toSlackMrkdwn", () => {
   it("converts <code> to backticks", () => {

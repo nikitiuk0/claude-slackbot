@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
-import { createLogger } from "../src/log.js";
+import { createLogger } from "../src/core/log.js";
 
 let dir: string;
 

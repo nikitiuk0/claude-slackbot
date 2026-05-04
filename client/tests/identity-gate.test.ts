@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { IdentityGate } from "../src/identity-gate.js";
+import { IdentityGate } from "../src/core/identity-gate.js";
 
 describe("IdentityGate", () => {
   it("admits allowlisted users", () => {

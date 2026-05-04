@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   EventDedupe,
   normalizeMention,
-} from "../../src/slack/adapter.js";
+} from "../../src/core/slack/adapter.js";
 
 describe("EventDedupe", () => {
   it("returns true the first time, false on repeat within ttl", () => {

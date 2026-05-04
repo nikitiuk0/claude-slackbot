@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StateStore, type ThreadState } from "../../src/state/store.js";
+import { StateStore, type ThreadState } from "../../src/core/state/store.js";
 
 let dir: string;
 let path: string;

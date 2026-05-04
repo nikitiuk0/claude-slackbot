@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { EditCoalescer, makeSlackClientFacade } from "../../src/slack/updater.js";
+import { EditCoalescer, makeSlackClientFacade } from "../../src/core/slack/updater.js";
 
 beforeEach(() => {
   vi.useFakeTimers();
