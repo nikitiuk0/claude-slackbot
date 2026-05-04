@@ -62,6 +62,18 @@ export async function runPair(argv: string[]): Promise<void> {
   await fs.mkdir(join(dir, "data"), { recursive: true });
   await fs.mkdir(join(dir, "logs"), { recursive: true });
 
+  // Optional: migrate Phase A state (data/state.json in cwd).
+  const phaseALocation = join(process.cwd(), "data");
+  if (await exists(phaseALocation) && (await exists(join(phaseALocation, "state.json")))) {
+    if (args["migrate-from"] === "auto") {
+      await fs.cp(phaseALocation, join(dir, "data"), { recursive: true });
+      console.log(`migrated Phase A state from ${phaseALocation}`);
+    } else {
+      console.log(`tip: detected Phase A state at ${phaseALocation}. Re-run with`);
+      console.log(`     --migrate-from auto to copy threads/milestones/attachments into the new profile.`);
+    }
+  }
+
   // 5. Set as default if first profile.
   const profilesJson = join(home, "profiles.json");
   if (!(await exists(profilesJson))) {
