@@ -1,19 +1,21 @@
 {
   "name": "@nikitiuk0/claude-slackbot",
-  "version": "0.2.0-dev.0",
+  "version": "0.2.0",
   "description": "Claude Code daemon paired to a shared Slack bot via claude-slackbot relay",
   "type": "module",
   "bin": { "claude-slackbot": "dist/index.js" },
   "main": "dist/index.js",
-  "files": ["dist", "src/core/prompt/system-prompt.txt"],
+  "files": ["dist"],
   "engines": { "node": ">=20" },
+  "publishConfig": { "access": "public" },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && mkdir -p dist/core/prompt && cp src/core/prompt/system-prompt.txt dist/core/prompt/ && chmod +x dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@slack/bolt": "^3.21.0",
