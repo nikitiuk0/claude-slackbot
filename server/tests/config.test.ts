@@ -5,7 +5,7 @@ function validEnv(): Record<string, string> {
   return {
     SLACK_BOT_TOKEN: "xoxb-x",
     SLACK_APP_TOKEN: "xapp-x",
-    DATABASE_URL: "postgres://u:p@h:5432/d",
+    DATABASE_PATH: "./data/test.sqlite",
     SERVER_PRIVATE_KEY_PATH: "./key",
     SERVER_PUBLIC_KEY_PATH: "./pub",
     PUBLIC_SERVER_URL: "https://x",
@@ -18,7 +18,7 @@ describe("loadConfig", () => {
   it("parses a valid env", () => {
     const c = loadConfig(validEnv());
     expect(c.slackBotToken).toBe("xoxb-x");
-    expect(c.databaseUrl).toBe("postgres://u:p@h:5432/d");
+    expect(c.databasePath).toBe("./data/test.sqlite");
     expect(c.port).toBe(8443); // default
     expect(c.logLevel).toBe("info"); // default
   });
@@ -29,10 +29,10 @@ describe("loadConfig", () => {
     expect(() => loadConfig(e)).toThrow(/SLACK_BOT_TOKEN/);
   });
 
-  it("throws on invalid DATABASE_URL", () => {
+  it("uses default DATABASE_PATH when omitted", () => {
     const e = validEnv();
-    e.DATABASE_URL = "not-a-url";
-    expect(() => loadConfig(e)).toThrow(/DATABASE_URL/);
+    delete e.DATABASE_PATH;
+    expect(loadConfig(e).databasePath).toBe("./data/claude-slackbot.sqlite");
   });
 
   it("accepts PORT override", () => {

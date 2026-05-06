@@ -98,7 +98,6 @@ describe("ServerConnection", () => {
       machineId: "test-machine",
       privateKey: clientPriv,
       serverPublicKey: serverPub,
-      persistServerUrl: vi.fn(async () => {}),
       onMessage: (msg) => receivedMessages.push(msg),
       onFatal: vi.fn(),
       log: noopLogger,
@@ -117,45 +116,6 @@ describe("ServerConnection", () => {
     expect(receivedMessages).toHaveLength(1);
     expect(receivedMessages[0]?.type).toBe("slack_event");
     expect(receivedMessages[0]?.event?.userId).toBe("U1");
-  });
-
-  it("migrate: calls persistServerUrl with new URL", async () => {
-    const { privateKey: serverPriv, publicKey: serverPub } = await generateKeyPair("EdDSA", { crv: "Ed25519" });
-    const { privateKey: clientPriv } = await makeClientKeypair();
-
-    const persistServerUrl = vi.fn(async (_url: string) => {});
-    let serverSocket: WsClient | null = null;
-
-    const fakeServer = await startFakeServer({
-      serverPriv: serverPriv as CryptoKey,
-      onConnection: (ws, sendHello) => {
-        serverSocket = ws;
-        void sendHello();
-      },
-    });
-    cleanups.push(fakeServer.close);
-
-    const conn = new ServerConnection({
-      initialUrl: fakeServer.url,
-      machineId: "test-machine",
-      privateKey: clientPriv,
-      serverPublicKey: serverPub,
-      persistServerUrl,
-      onMessage: vi.fn(),
-      onFatal: vi.fn(),
-      log: noopLogger,
-    });
-
-    conn.start();
-    await wait(150);
-
-    // Send migrate message
-    serverSocket!.send(JSON.stringify({ type: "migrate", new_url: "ws://127.0.0.1:9999/ws" }));
-    await wait(100);
-
-    conn.stop();
-
-    expect(persistServerUrl).toHaveBeenCalledWith("ws://127.0.0.1:9999/ws");
   });
 
   it("fatal close 4403: calls onFatal('revoked') and does not retry", async () => {
@@ -179,7 +139,6 @@ describe("ServerConnection", () => {
       machineId: "test-machine",
       privateKey: clientPriv,
       serverPublicKey: serverPub,
-      persistServerUrl: vi.fn(async () => {}),
       onMessage: vi.fn(),
       onFatal,
       log: noopLogger,
@@ -217,7 +176,6 @@ describe("ServerConnection", () => {
       machineId: "test-machine",
       privateKey: clientPriv,
       serverPublicKey: serverPub,
-      persistServerUrl: vi.fn(async () => {}),
       onMessage: vi.fn(),
       onFatal,
       log: noopLogger,

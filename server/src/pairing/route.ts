@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
-import type { Pool } from "pg";
+import type { Db } from "../db/pool.js";
 import { z } from "zod";
 import type { JWK } from "jose";
 import { claimPairing, ClaimError } from "./service.js";
+import type { Metrics } from "../metrics/registry.js";
 
 const Body = z.object({
   code: z.string().min(1),
@@ -12,7 +13,7 @@ const Body = z.object({
 
 export function registerPairRoute(
   app: FastifyInstance,
-  deps: { pool: Pool; publicWsUrl: string; serverPublicKeyJwk: JWK }
+  deps: { db: Db; publicWsUrl: string; serverPublicKeyJwk: JWK; metrics?: Metrics }
 ) {
   app.post("/pair", async (req, reply) => {
     const parsed = Body.safeParse(req.body);
@@ -31,11 +32,12 @@ export function registerPairRoute(
     }
     const pubKeyBytes = Buffer.from(JSON.stringify(jwk), "utf8");
     try {
-      const { machineId, revokedPrevious } = await claimPairing(deps.pool, {
+      const { machineId, revokedPrevious } = claimPairing(deps.db, {
         code: parsed.data.code,
         publicKey: pubKeyBytes,
         label: parsed.data.label,
       });
+      deps.metrics?.pairingsConsumedTotal.inc();
       return {
         machine_id: machineId,
         server_public_key: deps.serverPublicKeyJwk,

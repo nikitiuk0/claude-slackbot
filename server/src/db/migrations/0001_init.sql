@@ -1,23 +1,24 @@
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- SQLite schema for the relay server.
+-- All timestamps are stored as INTEGER unix milliseconds.
 
 CREATE TABLE IF NOT EXISTS users (
   slack_workspace_id TEXT NOT NULL,
   slack_user_id      TEXT NOT NULL,
   display_name       TEXT,
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at         INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
   PRIMARY KEY (slack_workspace_id, slack_user_id)
 );
 
 CREATE TABLE IF NOT EXISTS machines (
-  machine_id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  slack_workspace_id TEXT        NOT NULL,
-  slack_user_id      TEXT        NOT NULL,
-  public_key         BYTEA       NOT NULL,
+  machine_id         TEXT PRIMARY KEY,
+  slack_workspace_id TEXT NOT NULL,
+  slack_user_id      TEXT NOT NULL,
+  public_key         BLOB NOT NULL,
   label              TEXT,
-  status             TEXT        NOT NULL,
-  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-  last_seen_at       TIMESTAMPTZ,
-  revoked_at         TIMESTAMPTZ,
+  status             TEXT NOT NULL,
+  created_at         INTEGER NOT NULL DEFAULT (unixepoch() * 1000),
+  last_seen_at       INTEGER,
+  revoked_at         INTEGER,
   FOREIGN KEY (slack_workspace_id, slack_user_id)
     REFERENCES users(slack_workspace_id, slack_user_id)
 );
@@ -27,12 +28,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS machines_one_active_per_user
   WHERE status = 'active';
 
 CREATE TABLE IF NOT EXISTS pairings (
-  pairing_code       TEXT        PRIMARY KEY,
-  slack_workspace_id TEXT        NOT NULL,
-  slack_user_id      TEXT        NOT NULL,
-  expires_at         TIMESTAMPTZ NOT NULL,
-  consumed_at        TIMESTAMPTZ,
-  machine_id         UUID
+  pairing_code       TEXT PRIMARY KEY,
+  slack_workspace_id TEXT NOT NULL,
+  slack_user_id      TEXT NOT NULL,
+  expires_at         INTEGER NOT NULL,
+  consumed_at        INTEGER,
+  machine_id         TEXT
 );
 
 CREATE INDEX IF NOT EXISTS pairings_pending

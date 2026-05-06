@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Db } from "../db/pool.js";
 import * as users from "../db/users.js";
 import * as pairings from "../db/pairings.js";
 import type { IncomingSlackEvent } from "../slack/adapter.js";
@@ -10,7 +10,7 @@ export type SlackHandle = {
 };
 
 export async function runInstallFlow(args: {
-  pool: Pool;
+  db: Db;
   slack: SlackHandle;
   publicServerUrl: string;
   npmPackage: string;
@@ -18,8 +18,8 @@ export async function runInstallFlow(args: {
   event: IncomingSlackEvent;
 }): Promise<void> {
   const { event } = args;
-  await users.upsertUser(args.pool, { workspaceId: event.workspaceId, userId: event.userId });
-  const { pairingCode } = await pairings.createPairing(args.pool, {
+  users.upsertUser(args.db, { workspaceId: event.workspaceId, userId: event.userId });
+  const { pairingCode } = pairings.createPairing(args.db, {
     workspaceId: event.workspaceId, userId: event.userId,
   });
 
