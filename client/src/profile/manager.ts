@@ -5,6 +5,7 @@ import { importJWK, type KeyLike } from "jose";
 import { loadKeypair } from "../identity/keypair.js";
 import { parseProfileConfig } from "./config.js";
 import { ServerConnection } from "../transport/server-connection.js";
+import { detectProxyForUrl, buildProxyAgent } from "../transport/proxy.js";
 import { createRemoteSlackFacade } from "../transport/remote-slack-facade.js";
 import { normalizeServerEvent } from "../transport/server-adapter.js";
 import { Orchestrator } from "../core/orchestrator.js";
@@ -111,16 +112,16 @@ export async function startProfile(opts: {
 
   await orchestrator.start();
 
+  const proxyDetection = detectProxyForUrl(config.serverUrl);
+  const proxyAgent = buildProxyAgent(proxyDetection, log);
+
   connection = new ServerConnection({
     initialUrl: config.serverUrl,
     machineId,
     privateKey: keypair.privateKey,
     serverPublicKey,
-    persistServerUrl: async (newUrl) => {
-      const raw = JSON.parse(await fs.readFile(configPath, "utf8"));
-      raw.serverUrl = newUrl;
-      await fs.writeFile(configPath, JSON.stringify(raw, null, 2), "utf8");
-    },
+    proxyAgent,
+    proxyDetection,
     onMessage: (msg) => {
       if (msg.type === "slack_rpc_response") {
         facade._ingest(msg);

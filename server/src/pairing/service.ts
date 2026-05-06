@@ -1,4 +1,5 @@
-import type { Pool, PoolClient } from "pg";
+import { randomUUID } from "node:crypto";
+import type { Db } from "../db/pool.js";
 
 export class ClaimError extends Error {
   constructor(public code: "unknown" | "expired" | "consumed", message: string) {
@@ -8,72 +9,50 @@ export class ClaimError extends Error {
 
 export type ClaimResult = { machineId: string; revokedPrevious: number };
 
-export async function claimPairing(
-  pool: Pool,
+export function claimPairing(
+  db: Db,
   args: { code: string; publicKey: Buffer; label?: string }
-): Promise<ClaimResult> {
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    // Lock the pairing row so two concurrent claims serialize.
-    const live = await client.query(
-      `SELECT pairing_code, slack_workspace_id, slack_user_id, expires_at, consumed_at
-       FROM pairings WHERE pairing_code = $1 FOR UPDATE`,
-      [args.code]
-    );
-    if (live.rows.length === 0) {
+): ClaimResult {
+  const tx = db.transaction((): ClaimResult => {
+    const row = db
+      .prepare(
+        `SELECT pairing_code, slack_workspace_id, slack_user_id, expires_at, consumed_at
+         FROM pairings WHERE pairing_code = ?`
+      )
+      .get(args.code) as any;
+    if (!row) {
       throw new ClaimError("unknown", "unknown pairing code");
     }
-    const row = live.rows[0]!;
     if (row.consumed_at !== null) {
       throw new ClaimError("consumed", "pairing code already used");
     }
-    if (new Date(row.expires_at).getTime() <= Date.now()) {
+    if (Number(row.expires_at) <= Date.now()) {
       throw new ClaimError("expired", "pairing code expired");
     }
     const workspaceId = row.slack_workspace_id as string;
     const userId = row.slack_user_id as string;
-    const revoked = await revokeActiveByUserTx(client, { workspaceId, userId });
-    const inserted = await insertMachineTx(client, {
-      workspaceId, userId, publicKey: args.publicKey, label: args.label,
-    });
-    await client.query(
-      `UPDATE pairings SET consumed_at = now(), machine_id = $2
-       WHERE pairing_code = $1`,
-      [args.code, inserted.machineId]
-    );
-    await client.query("COMMIT");
-    return { machineId: inserted.machineId, revokedPrevious: revoked };
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
-}
 
-// Intra-transaction variants of repo functions: they take a client, not a pool.
-async function revokeActiveByUserTx(
-  client: PoolClient,
-  args: { workspaceId: string; userId: string }
-): Promise<number> {
-  const r = await client.query(
-    `UPDATE machines SET status = 'revoked', revoked_at = now()
-     WHERE slack_workspace_id = $1 AND slack_user_id = $2 AND status = 'active'`,
-    [args.workspaceId, args.userId]
-  );
-  return r.rowCount ?? 0;
-}
+    const now = Date.now();
+    const revokedRes = db
+      .prepare(
+        `UPDATE machines SET status = 'revoked', revoked_at = ?
+         WHERE slack_workspace_id = ? AND slack_user_id = ? AND status = 'active'`
+      )
+      .run(now, workspaceId, userId);
 
-async function insertMachineTx(
-  client: PoolClient,
-  args: { workspaceId: string; userId: string; publicKey: Buffer; label?: string }
-): Promise<{ machineId: string }> {
-  const r = await client.query<{ machine_id: string }>(
-    `INSERT INTO machines (slack_workspace_id, slack_user_id, public_key, label, status)
-     VALUES ($1, $2, $3, $4, 'active')
-     RETURNING machine_id`,
-    [args.workspaceId, args.userId, args.publicKey, args.label ?? null]
-  );
-  return { machineId: r.rows[0]!.machine_id };
+    const machineId = randomUUID();
+    db.prepare(
+      `INSERT INTO machines
+         (machine_id, slack_workspace_id, slack_user_id, public_key, label, status, created_at)
+       VALUES (?, ?, ?, ?, ?, 'active', ?)`
+    ).run(machineId, workspaceId, userId, args.publicKey, args.label ?? null, now);
+
+    db.prepare(
+      `UPDATE pairings SET consumed_at = ?, machine_id = ?
+       WHERE pairing_code = ?`
+    ).run(now, machineId, args.code);
+
+    return { machineId, revokedPrevious: revokedRes.changes ?? 0 };
+  });
+  return tx();
 }

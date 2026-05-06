@@ -1,21 +1,20 @@
-import pg from "pg";
+import Database, { type Database as SqliteDb } from "better-sqlite3";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
-export type DbPool = pg.Pool;
+export type Db = SqliteDb;
 
-export function createPool(databaseUrl: string): DbPool {
-  return new pg.Pool({
-    connectionString: databaseUrl,
-    max: 10,
-    idleTimeoutMillis: 30_000,
-  });
+export function openDb(path: string): Db {
+  const db = new Database(path);
+  db.pragma("journal_mode = WAL");
+  db.pragma("foreign_keys = ON");
+  db.pragma("synchronous = NORMAL");
+  return db;
 }
 
-/** Run the bundled migration(s) idempotently. */
-export async function migrate(pool: DbPool): Promise<void> {
-  const { readFileSync } = await import("node:fs");
-  const { fileURLToPath } = await import("node:url");
-  const { dirname, join } = await import("node:path");
+export function migrate(db: Db): void {
   const here = dirname(fileURLToPath(import.meta.url));
   const sql = readFileSync(join(here, "migrations", "0001_init.sql"), "utf8");
-  await pool.query(sql);
+  db.exec(sql);
 }

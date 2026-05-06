@@ -3,7 +3,7 @@ import { z } from "zod";
 const Schema = z.object({
   SLACK_BOT_TOKEN: z.string().min(1),
   SLACK_APP_TOKEN: z.string().min(1),
-  DATABASE_URL: z.string().regex(/^postgres:\/\//, "DATABASE_URL must start with postgres://"),
+  DATABASE_PATH: z.string().min(1).default("./data/claude-slackbot.sqlite"),
   SERVER_PRIVATE_KEY_PATH: z.string().min(1),
   SERVER_PUBLIC_KEY_PATH: z.string().min(1),
   PUBLIC_SERVER_URL: z.string().url(),
@@ -17,7 +17,7 @@ const Schema = z.object({
 export type ServerConfig = {
   slackBotToken: string;
   slackAppToken: string;
-  databaseUrl: string;
+  databasePath: string;
   serverPrivateKeyPath: string;
   serverPublicKeyPath: string;
   publicServerUrl: string;
@@ -33,7 +33,7 @@ export function loadConfig(env: Record<string, string | undefined>): ServerConfi
   return {
     slackBotToken: parsed.SLACK_BOT_TOKEN,
     slackAppToken: parsed.SLACK_APP_TOKEN,
-    databaseUrl: parsed.DATABASE_URL,
+    databasePath: parsed.DATABASE_PATH,
     serverPrivateKeyPath: parsed.SERVER_PRIVATE_KEY_PATH,
     serverPublicKeyPath: parsed.SERVER_PUBLIC_KEY_PATH,
     publicServerUrl: parsed.PUBLIC_SERVER_URL,

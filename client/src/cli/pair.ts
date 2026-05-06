@@ -1,7 +1,12 @@
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import https from "node:https";
+import http from "node:http";
+import type { Agent } from "node:http";
 import { generateAndSaveKeypair } from "../identity/keypair.js";
 import { resolveHome, profileDir } from "../profile/home.js";
+import { detectProxyForUrl, buildProxyAgent, describeDetection } from "../transport/proxy.js";
+import { createLogger } from "../core/log.js";
 
 export async function runPair(argv: string[]): Promise<void> {
   const args = parseArgs(argv);
@@ -32,18 +37,28 @@ export async function runPair(argv: string[]): Promise<void> {
     label,
   };
   const pairUrl = new URL("/pair", args.server).toString();
-  const res = await fetch(pairUrl, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const text = await res.text();
+  const detection = detectProxyForUrl(pairUrl);
+  const log = createLogger({ level: process.env.LOG_LEVEL ?? "info", logFile: "" });
+  const agent = buildProxyAgent(detection, log);
+  let res: { status: number; text: string };
+  try {
+    res = await httpPost(pairUrl, JSON.stringify(body), agent);
+  } catch (err: any) {
     await fs.rm(keypairPath, { force: true });
-    console.error(`pair failed: status=${res.status} body=${text}`);
+    console.error(`pair failed: could not reach ${pairUrl}: ${err.message ?? err}`);
+    console.error("Proxy detection:");
+    console.error(describeDetection(detection));
+    if (!detection.proxyUrl) {
+      console.error("If you're behind a proxy that wasn't auto-detected, set ALL_PROXY (e.g. ALL_PROXY=socks5://127.0.0.1:8080) and retry.");
+    }
     process.exit(1);
   }
-  const { machine_id, server_public_key, ws_url, revoked_previous } = await res.json();
+  if (res.status < 200 || res.status >= 300) {
+    await fs.rm(keypairPath, { force: true });
+    console.error(`pair failed: status=${res.status} body=${res.text}`);
+    process.exit(1);
+  }
+  const { machine_id, server_public_key, ws_url, revoked_previous } = JSON.parse(res.text);
 
   // 4. Persist machine_id, pinned server key, config.
   await fs.writeFile(join(dir, "identity", "machine_id"), machine_id);
@@ -98,4 +113,33 @@ function parseArgs(argv: string[]): Record<string, string> {
 
 async function exists(p: string): Promise<boolean> {
   try { await fs.access(p); return true; } catch { return false; }
+}
+
+function httpPost(url: string, body: string, agent: Agent | null): Promise<{ status: number; text: string }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const lib = u.protocol === "https:" ? https : http;
+    const req = lib.request(
+      {
+        hostname: u.hostname,
+        port: u.port || (u.protocol === "https:" ? 443 : 80),
+        path: u.pathname + u.search,
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": Buffer.byteLength(body).toString(),
+        },
+        ...(agent ? { agent } : {}),
+      },
+      (res) => {
+        let data = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, text: data }));
+      }
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
 }

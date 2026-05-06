@@ -41,7 +41,9 @@ npx -y @nikitiuk0/claude-slackbot unpair --profile personal
 
 ## Operator (server setup)
 
-See [`server/README.md`](server/README.md) for Postgres setup, keypair generation, GCP Secret Manager config, and the `gcloud run deploy` command. A `docker-compose.yml` at the repo root brings up Postgres + the server for local dev.
+See [`server/README.md`](server/README.md) for keypair generation, env config, and deployment. The relay is a single Node.js process backed by a SQLite file on a persistent volume — no separate database to provision. It runs anywhere a long-lived container can run, with optional support for sitting behind a reverse proxy. Health/metrics endpoints (`/healthz`, `/metrics`) are exposed for monitoring.
+
+A minimal `docker-compose.yml` at the repo root runs the server locally for development.
 
 Full design: [`docs/superpowers/specs/2026-04-20-phase-b-multi-user-design.md`](docs/superpowers/specs/2026-04-20-phase-b-multi-user-design.md).
 
@@ -76,6 +78,6 @@ Key properties:
 
 ## Architecture
 
-The relay server is a Node.js + TypeScript process that runs on Cloud Run (always-on, `min=max=1` for Slack Socket Mode). Each client daemon connects over a mutually-authenticated WebSocket (Ed25519 JWT, server-key pinning). Identity rows (`users`, `machines`, `pairings`) live in Postgres — that's the entire server-side data model. The server holds the Slack bot token and dispatches each Slack RPC call (`postReply`, `addReaction`, `getThread`, `downloadFile`, …) on behalf of the connected machine.
+The relay server is a Node.js + TypeScript process designed to run as a single long-lived container (Cloud Run with `min=max=1`, a VM, or anything in between — Slack Socket Mode requires the process to stay alive). Each client daemon connects over a mutually-authenticated WebSocket (Ed25519 JWT, server-key pinning). Identity rows (`users`, `machines`, `pairings`) live in a single SQLite file on a persistent volume — that's the entire server-side data model. The server holds the Slack bot token and dispatches each Slack RPC call (`postReply`, `addReaction`, `getThread`, `downloadFile`, …) on behalf of the connected machine. Reverse-proxy deployment is supported and recommended for production.
 
 For the full picture (system overview, pairing flow, mention/task flow, storage, auth) see [`docs/architecture.md`](docs/architecture.md). Full implementation plan: [`docs/superpowers/plans/2026-04-20-phase-b-multi-user.md`](docs/superpowers/plans/2026-04-20-phase-b-multi-user.md).

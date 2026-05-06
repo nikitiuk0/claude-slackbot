@@ -1,4 +1,4 @@
-import type { Pool } from "pg";
+import type { Db } from "../db/pool.js";
 import * as machines from "../db/machines.js";
 import type { ConnectionRegistry } from "./connections.js";
 import type { IncomingSlackEvent } from "../slack/adapter.js";
@@ -9,14 +9,14 @@ export type RouterSlack = {
 };
 
 export async function routeSlackEvent(args: {
-  pool: Pool;
+  db: Db;
   registry: ConnectionRegistry;
   slack: RouterSlack;
   installFlow: (event: IncomingSlackEvent) => Promise<void>;
   event: IncomingSlackEvent;
 }): Promise<void> {
   const { event } = args;
-  const active = await machines.listActiveByUser(args.pool, {
+  const active = machines.listActiveByUser(args.db, {
     workspaceId: event.workspaceId, userId: event.userId,
   });
   if (active.length === 0) {

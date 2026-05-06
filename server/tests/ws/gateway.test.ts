@@ -1,39 +1,25 @@
 import { describe, it, expect } from "vitest";
 import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
-import { newDb, DataType } from "pg-mem";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { generateKeyPair, SignJWT, exportJWK } from "jose";
 import WebSocket from "ws";
 import { ConnectionRegistry } from "../../src/ws/connections.js";
 import { registerWsGateway } from "../../src/ws/gateway.js";
 import { createJwtSigner, InMemoryJtiStore } from "../../src/identity/jwt.js";
 import * as users from "../../src/db/users.js";
+import { freshDb } from "../test-helpers/db.js";
 
 async function setup() {
-  const mem = newDb({ autoCreateForeignKeyIndices: true });
-  mem.public.registerFunction({
-    name: "gen_random_uuid",
-    returns: DataType.uuid,
-    impure: true,
-    implementation: () => crypto.randomUUID(),
-  });
-  mem.registerExtension("pgcrypto", () => {});
-  const here = dirname(fileURLToPath(import.meta.url));
-  mem.public.none(readFileSync(join(here, "..", "..", "src", "db", "migrations", "0001_init.sql"), "utf8"));
-  const pool = new (mem.adapters.createPg().Pool)();
+  const db = freshDb();
 
-  await users.upsertUser(pool, { workspaceId: "T1", userId: "U1" });
+  users.upsertUser(db, { workspaceId: "T1", userId: "U1" });
   const mk = await generateKeyPair("EdDSA", { crv: "Ed25519", extractable: true });
   const pubJwk = await exportJWK(mk.publicKey);
-  const r = await pool.query(
-    `INSERT INTO machines (slack_workspace_id, slack_user_id, public_key, status)
-     VALUES ('T1', 'U1', $1, 'active') RETURNING machine_id`,
-    [Buffer.from(JSON.stringify(pubJwk))]
-  );
-  const machineId = r.rows[0].machine_id as string;
+  const machineId = crypto.randomUUID();
+  db.prepare(
+    `INSERT INTO machines (machine_id, slack_workspace_id, slack_user_id, public_key, status)
+     VALUES (?, 'T1', 'U1', ?, 'active')`
+  ).run(machineId, Buffer.from(JSON.stringify(pubJwk)));
 
   const sk = await generateKeyPair("EdDSA", { crv: "Ed25519", extractable: true });
   const signer = createJwtSigner({ privateKey: sk.privateKey });
@@ -42,7 +28,7 @@ async function setup() {
   const app = Fastify();
   await app.register(fastifyWebsocket);
   registerWsGateway(app, {
-    pool,
+    db,
     registry,
     jtiStore: new InMemoryJtiStore(),
     serverSigner: signer,
@@ -51,7 +37,7 @@ async function setup() {
   const addr = app.server.address();
   const port = typeof addr === "object" && addr ? addr.port : 0;
 
-  return { app, port, machineId, machinePrivateKey: mk.privateKey, pool, registry };
+  return { app, port, machineId, machinePrivateKey: mk.privateKey, db, registry };
 }
 
 async function mintClientJwt(privateKey: any, machineId: string): Promise<string> {
@@ -76,7 +62,6 @@ describe("WebSocket gateway", () => {
       });
       expect(helloMsg.type).toBe("server_hello");
       expect(helloMsg.jwt).toBeTruthy();
-      // Registry populated
       await new Promise((r) => setTimeout(r, 50));
       expect(registry.getByMachine(machineId)).toBeDefined();
       ws.close();

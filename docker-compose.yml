@@ -1,36 +1,16 @@
-# Local dev stack: Postgres + server (run via tsx with source mounted).
-# Bootstrap keypair (one-time, on the host):
+# Local dev stack — single SQLite-backed server.
+# One-time bootstrap (on the host):
 #   cd server && npx tsx scripts/bootstrap-keypair.ts
-# Start everything:
+# Start:
 #   docker compose up
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: claudeslackbot
-      POSTGRES_PASSWORD: claudeslackbot
-      POSTGRES_DB: claudeslackbot
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    ports:
-      - "127.0.0.1:5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U claudeslackbot -d claudeslackbot"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-
   server:
-    image: node:20-bookworm-slim
+    image: node:24-trixie-slim
     working_dir: /app
-    depends_on:
-      postgres:
-        condition: service_healthy
     env_file:
       - ./server/.env
     environment:
-      # Override host-side .env values for the Docker network.
-      DATABASE_URL: postgres://claudeslackbot:claudeslackbot@postgres:5432/claudeslackbot
+      DATABASE_PATH: /app/server/data/claude-slackbot.sqlite
       SERVER_PRIVATE_KEY_PATH: /app/server/data/server-ed25519.key
       SERVER_PUBLIC_KEY_PATH: /app/server/data/server-ed25519.pub
       NODE_ENV: development
@@ -47,6 +27,3 @@ services:
       [ -f /app/node_modules/.package-lock.json ] || (echo 'installing deps in container (one-time)...'; npm install) &&
       cd /app/server && exec node --import tsx src/index.ts
       "
-
-volumes:
-  pgdata:

@@ -1,14 +1,13 @@
-import type { Pool } from "pg";
+import type { Db } from "./pool.js";
 
-export async function upsertUser(
-  pool: Pool,
+export function upsertUser(
+  db: Db,
   args: { workspaceId: string; userId: string; displayName?: string }
-): Promise<void> {
-  await pool.query(
+): void {
+  db.prepare(
     `INSERT INTO users (slack_workspace_id, slack_user_id, display_name)
-     VALUES ($1, $2, $3)
+     VALUES (?, ?, ?)
      ON CONFLICT (slack_workspace_id, slack_user_id)
-     DO UPDATE SET display_name = COALESCE(EXCLUDED.display_name, users.display_name)`,
-    [args.workspaceId, args.userId, args.displayName ?? null]
-  );
+     DO UPDATE SET display_name = COALESCE(excluded.display_name, users.display_name)`
+  ).run(args.workspaceId, args.userId, args.displayName ?? null);
 }

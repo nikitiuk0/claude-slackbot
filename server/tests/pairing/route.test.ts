@@ -1,32 +1,19 @@
 import { describe, it, expect } from "vitest";
 import Fastify from "fastify";
-import { newDb, DataType } from "pg-mem";
-import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 import * as users from "../../src/db/users.js";
 import * as pairings from "../../src/db/pairings.js";
 import { registerPairRoute } from "../../src/pairing/route.js";
+import { freshDb } from "../test-helpers/db.js";
 
 async function setup() {
-  const mem = newDb({ autoCreateForeignKeyIndices: true });
-  mem.public.registerFunction({
-    name: "gen_random_uuid",
-    returns: DataType.uuid,
-    impure: true,
-    implementation: () => crypto.randomUUID(),
-  });
-  mem.registerExtension("pgcrypto", () => {});
-  const here = dirname(fileURLToPath(import.meta.url));
-  mem.public.none(readFileSync(join(here, "..", "..", "src", "db", "migrations", "0001_init.sql"), "utf8"));
-  const pool = new (mem.adapters.createPg().Pool)();
+  const db = freshDb();
   const app = Fastify();
   registerPairRoute(app, {
-    pool,
+    db,
     publicWsUrl: "wss://example/ws",
     serverPublicKeyJwk: { kty: "OKP", crv: "Ed25519", x: "abc" } as any,
   });
-  return { app, pool };
+  return { app, db };
 }
 
 const jwkFixture = { kty: "OKP", crv: "Ed25519", x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo" };
@@ -34,9 +21,9 @@ const machinePubKey = Buffer.from(JSON.stringify(jwkFixture), "utf8").toString("
 
 describe("POST /pair", () => {
   it("claims a live code and returns machine_id + server_public_key + ws_url", async () => {
-    const { app, pool } = await setup();
-    await users.upsertUser(pool, { workspaceId: "T1", userId: "U1" });
-    const p = await pairings.createPairing(pool, { workspaceId: "T1", userId: "U1" });
+    const { app, db } = await setup();
+    users.upsertUser(db, { workspaceId: "T1", userId: "U1" });
+    const p = pairings.createPairing(db, { workspaceId: "T1", userId: "U1" });
     const res = await app.inject({
       method: "POST",
       url: "/pair",
@@ -51,12 +38,12 @@ describe("POST /pair", () => {
   });
 
   it("returns 410 for expired code", async () => {
-    const { app, pool } = await setup();
-    await users.upsertUser(pool, { workspaceId: "T1", userId: "U1" });
-    await pool.query(
+    const { app, db } = await setup();
+    users.upsertUser(db, { workspaceId: "T1", userId: "U1" });
+    db.prepare(
       `INSERT INTO pairings (pairing_code, slack_workspace_id, slack_user_id, expires_at)
-       VALUES ('PAIR-old', 'T1', 'U1', now() - interval '1 hour')`
-    );
+       VALUES (?, 'T1', 'U1', ?)`
+    ).run("PAIR-old", Date.now() - 60 * 60 * 1000);
     const res = await app.inject({
       method: "POST",
       url: "/pair",
@@ -66,9 +53,9 @@ describe("POST /pair", () => {
   });
 
   it("returns 409 for already-consumed code", async () => {
-    const { app, pool } = await setup();
-    await users.upsertUser(pool, { workspaceId: "T1", userId: "U1" });
-    const p = await pairings.createPairing(pool, { workspaceId: "T1", userId: "U1" });
+    const { app, db } = await setup();
+    users.upsertUser(db, { workspaceId: "T1", userId: "U1" });
+    const p = pairings.createPairing(db, { workspaceId: "T1", userId: "U1" });
     await app.inject({ method: "POST", url: "/pair", payload: { code: p.pairingCode, machine_public_key: machinePubKey } });
     const res = await app.inject({
       method: "POST",
